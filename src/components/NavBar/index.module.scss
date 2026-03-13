@@ -1,17 +1,40 @@
 .nav_bar {
     width: 100%;
-    height: 50px;
+    height: 60px;
     display: flex;
     align-items: center;
+
+    .nav_bar_avatar{
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-left: 20px;
+        img{
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+        }
+        .line{
+            width: 2px;
+            height: 16px;
+            background-color: #000;
+            margin: 0 15px;
+            border-radius: 5px;
+        }
+        .text_img{
+            width: 25px;
+            height: 25px;
+        }
+    }
 
     .logo {
         width: 25px;
         height: 25px;
-        margin-left: 15px;
+        margin-left: 20px;
     }
 
     .drag_area {
-        width: calc(100% - 220px);
+        width: calc(100% - 300px);
         height: 100%;
     }
 
@@ -24,6 +47,7 @@
         justify-content: center;
         align-items: center;
         cursor: auto;
+        margin-top: -10px;
 
         &:hover {
             // background-color: rgba(140, 138, 138, 0.1);
