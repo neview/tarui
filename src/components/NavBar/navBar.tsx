@@ -15,7 +15,7 @@ export default function NavBar() {
       <img className={styles.logo} src={logo} alt="" />
       <div className={styles.nav_bar_avatar}>
         <img src={avatar} alt="" />
-        <div className={styles.line}></div>
+        <div className={styles.nav_line}></div>
         <img className={styles.text_img} src={xiaoxi2} alt="" />
       </div>
       <div className={styles.drag_area} data-tauri-drag-region></div>

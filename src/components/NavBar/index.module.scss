@@ -14,12 +14,13 @@
             height: 30px;
             border-radius: 50%;
         }
-        .line{
+        .nav_line{
             width: 2px;
             height: 16px;
             background-color: #000;
             margin: 0 15px;
             border-radius: 5px;
+            flex-shrink: 0;
         }
         .text_img{
             width: 25px;

@@ -1,6 +1,7 @@
 import { Routes, Route } from "react-router-dom";
 
 import "./App.css";
+import "./globals.css";
 import NavBar from "./components/NavBar/navBar";
 import { LeftMenu } from "./components/LeftMenu/leftMenu";
 
@@ -13,7 +14,7 @@ import QQ from "./pages/QQ";
 
 function App() {
   return (
-    <main className="container">
+    <main>
       <NavBar />
       <div className="content_box">
         <div>
