@@ -17,10 +17,11 @@
         .nav_line{
             width: 2px;
             height: 16px;
-            background-color: #000;
+            background-color: hsl(var(--foreground));
             margin: 0 15px;
             border-radius: 5px;
             flex-shrink: 0;
+            opacity: 0.5;
         }
         .text_img{
             width: 25px;
@@ -35,8 +36,38 @@
     }
 
     .drag_area {
-        width: calc(100% - 300px);
+        width: calc(100% - 360px);
         height: 100%;
+    }
+
+    .theme_toggle {
+        width: 60px;
+        height: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        cursor: auto;
+        margin-top: -10px;
+
+        &:hover {
+            .theme-toggle-btn {
+                background-color: rgba(140, 138, 138, 0.1);
+            }
+        }
+
+        .theme-toggle-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            color: currentColor;
+            transition: background-color 0.2s;
+        }
     }
 
     .min_butt,

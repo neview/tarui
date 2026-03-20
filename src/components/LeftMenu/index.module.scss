@@ -20,10 +20,11 @@
         height: 34px;
         position: absolute;
         left: 13px;
-        background-color: #1D1C2E;
+        background-color: var(--menu-slider-bg, #ffffff);
         border-radius: 50%;
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         z-index: 8;
+        box-shadow: var(--menu-slider-shadow, 0 0 10px rgba(255, 255, 255, 0.5));
     }
 }
 

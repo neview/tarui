@@ -174,7 +174,7 @@ export function MagicCard(props: MagicCardProps) {
         `,
       }}
     >
-      <div className="bg-background absolute inset-px z-20 rounded-[inherit]" />
+      <div className="bg-card absolute inset-px z-20 rounded-[inherit]" />
 
       {mode === "gradient" && (
         <motion.div

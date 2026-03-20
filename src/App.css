@@ -120,14 +120,17 @@ button {
   padding: 0;
   box-sizing: border-box;
 }
-html{
+
+html {
   background-color: #F3F6FD;
 }
-.content_box{
+
+.content_box {
   display: flex;
   align-items: center;
 }
-.main_content{
+
+.main_content {
   width: calc(100vw - 110px);
   height: calc(100vh - 100px);
   background-color: #ffffff;
@@ -136,4 +139,11 @@ html{
   margin-top: 5px;
   padding: 10px;
   overflow: hidden;
+}
+
+.dark .main_content {
+  /* 背景透明以便流星可见；内容区用卡片自带背景 */
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }

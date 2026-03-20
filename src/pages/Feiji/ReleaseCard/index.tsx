@@ -3,17 +3,16 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { LoginForm, FormData } from "@/components/LoginForm";
+import { ReleaseForm, ReleaseFormData } from "../ReleaseForm";
 
-interface LoginCardProps {
-  onSubmit?: (data: FormData) => void;
+interface ReleaseCardProps {
+  onSubmit?: (data: ReleaseFormData) => void;
 }
 
-export function LoginCard({ onSubmit }: LoginCardProps) {
+export function ReleaseCard({ onSubmit }: ReleaseCardProps) {
   return (
     <Card className="w-full max-w-sm border-none p-0 shadow-none">
       <MagicCard
@@ -21,16 +20,14 @@ export function LoginCard({ onSubmit }: LoginCardProps) {
         className="p-0"
       >
         <CardHeader className="border-border border-b p-4 [.border-b]:pb-4">
-          <CardTitle>Login</CardTitle>
+          <CardTitle>发布微信小程序版本</CardTitle>
           <CardDescription>
-            Enter your credentials to access your account
+            填写版本信息并发布新版本
           </CardDescription>
         </CardHeader>
         <CardContent className="p-4">
-          <LoginForm onSubmit={onSubmit} />
+          <ReleaseForm onSubmit={onSubmit} />
         </CardContent>
-        <CardFooter className="border-border border-t p-4 [.border-t]:pt-4">
-        </CardFooter>
       </MagicCard>
     </Card>
   );

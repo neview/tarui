@@ -20,7 +20,7 @@ function App() {
         <div>
           <LeftMenu />
         </div>
-        <div className="main_content">
+        <div className="main_content relative overflow-hidden">
           <Routes>
             <Route path="/" element={<Feiji />} />
             <Route path="/feiji" element={<Feiji />} />
