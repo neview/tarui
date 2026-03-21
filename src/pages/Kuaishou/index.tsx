@@ -5,6 +5,7 @@ import { KuaishouCard } from "./KuaishouCard";
 import { WxRibaoFormData } from "./KuaishouForm";
 import { Alert, useAlert } from "@/components/ui/alert";
 import { AnimatedList } from "@/components/ui/animated-list";
+import { Meteors } from "@/components/ui/meteors";
 import styles from "./index.module.scss";
 
 interface PyProcess {
@@ -76,7 +77,10 @@ export default function Kuaishou() {
   };
 
   return (
-    <div style={{ padding: "10px 10px 30px 10px" }} className={`${styles.kuaishou_page} relative`}>
+    <div style={{ padding: "10px 10px 30px 10px" }} className={`${styles.kuaishou_page} relative overflow-hidden`}>
+      {/* Meteors 背景动画 */}
+      <Meteors number={30} />
+      
       <Alert alert={alert} onClose={closeAlert} />
       <div
         className={

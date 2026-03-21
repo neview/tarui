@@ -49,9 +49,15 @@ export default {
           "50%": { backgroundPosition: "100% 100%" },
           "100%": { backgroundPosition: "0% 0%" },
         },
+        meteor: {
+          "0%": { transform: "rotate(300deg) translateX(0)", opacity: "1" },
+          "70%": { opacity: "1" },
+          "100%": { transform: "rotate(300deg) translateX(-500px)", opacity: "0" },
+        },
       },
       animation: {
         shine: "shine var(--duration, 14s) infinite linear",
+        meteor: "meteor 5s linear infinite",
       },
     },
   },

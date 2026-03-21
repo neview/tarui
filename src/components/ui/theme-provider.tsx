@@ -14,10 +14,10 @@ export interface ThemeProviderProps {
 
 export function ThemeProvider({
   children,
-  defaultTheme = "system",
-  storageKey = "theme-key",
+  defaultTheme = "dark",
+  storageKey = "tauri-app-theme",
   attribute = "class",
-  enableSystem = true,
+  enableSystem = false,
   disableTransitionOnChange = false,
 }: ThemeProviderProps) {
   return (
