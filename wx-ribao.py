@@ -284,15 +284,16 @@ def getReportInfo(result):
             pass  # 不写入任何内容，文件即变为空
 
 if __name__ == "__main__":
-    url = "https://doc.weixin.qq.com/forms/j/AKUAmwcxAA4AMcALQaMABgCNxhNl1H9Mj_fork?page=5&_cef_tabid_=9f85d2b15d5507808aacc7beca28b7b7#/journal-answer/8?journaluuid=5tnb2GLSq3uGsirYomG29gnFa1Ew5qBh8eBREjWL4ARBFC71eYfN9QMQ9vboGRmWRM"
-    id = url.split('/forms/j/')[1].split('?')[0]
-    if os.path.exists('cookies.txt'):
-        if os.path.getsize('cookies.txt') == 0:
-            fileNoneDate()
-        else:
-            with open('cookies.txt', "r", encoding="utf-8") as f:
-                getReportInfo(json.load(f))
-    else:
-        fileNoneDate()
+    print('hello world')
+    # url = "https://doc.weixin.qq.com/forms/j/AKUAmwcxAA4AMcALQaMABgCNxhNl1H9Mj_fork?page=5&_cef_tabid_=9f85d2b15d5507808aacc7beca28b7b7#/journal-answer/8?journaluuid=5tnb2GLSq3uGsirYomG29gnFa1Ew5qBh8eBREjWL4ARBFC71eYfN9QMQ9vboGRmWRM"
+    # id = url.split('/forms/j/')[1].split('?')[0]
+    # if os.path.exists('cookies.txt'):
+    #     if os.path.getsize('cookies.txt') == 0:
+    #         fileNoneDate()
+    #     else:
+    #         with open('cookies.txt', "r", encoding="utf-8") as f:
+    #             getReportInfo(json.load(f))
+    # else:
+    #     fileNoneDate()
 
 

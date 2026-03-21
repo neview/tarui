@@ -1,4 +1,15 @@
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
+
+function openNativeDatePicker(e: MouseEvent<HTMLInputElement>) {
+  const el = e.currentTarget;
+  if (typeof el.showPicker === "function") {
+    try {
+      el.showPicker();
+    } catch {
+      // 部分环境不支持或已在展示中
+    }
+  }
+}
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -109,13 +120,14 @@ export function WxRibaoForm({ onSubmit, onStop, loading }: WxRibaoFormProps) {
               type="date"
               value={startDate}
               max={today}
+              onClick={openNativeDatePicker}
+              className={`cursor-pointer ${errors.startDate ? "border-red-500" : ""}`}
               onChange={(e) => {
                 setStartDate(e.target.value);
                 if (errors.startDate) {
                   setErrors((prev) => ({ ...prev, startDate: undefined }));
                 }
               }}
-              className={errors.startDate ? "border-red-500" : ""}
             />
             <Calendar className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           </div>
@@ -134,13 +146,14 @@ export function WxRibaoForm({ onSubmit, onStop, loading }: WxRibaoFormProps) {
               value={endDate}
               max={today}
               min={startDate}
+              onClick={openNativeDatePicker}
+              className={`cursor-pointer ${errors.endDate ? "border-red-500" : ""}`}
               onChange={(e) => {
                 setEndDate(e.target.value);
                 if (errors.endDate) {
                   setErrors((prev) => ({ ...prev, endDate: undefined }));
                 }
               }}
-              className={errors.endDate ? "border-red-500" : ""}
             />
             <Calendar className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           </div>

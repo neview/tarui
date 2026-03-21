@@ -14,12 +14,45 @@ lazy_static::lazy_static!(
     static ref CURRENT_CHILD: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
 );
 
+/// 从 exe 所在目录推导项目根目录（wx-ribao.py 与 cookies.txt 所在目录）
+fn resolve_project_root() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法获取 exe 路径: {}", e))?;
+    let exe_dir = exe
+        .parent()
+        .ok_or("无法获取 exe 所在目录")?
+        .to_path_buf();
+    // 先尝试 exe 同级目录（打包后脚本可与 exe 放一起），再尝试开发模式：向上 3 级到项目根
+    let candidates = [
+        exe_dir.clone(),
+        exe_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| exe_dir.clone()),
+        exe_dir
+            .parent()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| exe_dir.clone()),
+        exe_dir
+            .parent()
+            .and_then(|p| p.parent().and_then(|p| p.parent().map(|p| p.to_path_buf())))
+            .unwrap_or_else(|| exe_dir.clone()),
+    ];
+    for dir in &candidates {
+        let script = dir.join("wx-ribao.py");
+        if script.is_file() {
+            return dir.canonicalize().map_err(|e| {
+                format!("项目根目录无效: {} ({})", dir.display(), e)
+            });
+        }
+    }
+    Err(format!(
+        "未找到 wx-ribao.py，已检查: exe 同级及向上 3 级目录（如 {}）",
+        exe_dir.display()
+    ))
+}
+
 #[tauri::command]
-async fn run_python_script(
-    app: AppHandle,
-    script_path: String,
-    params: Vec<String>,
-) -> Result<(), String> {
+async fn run_wx_ribao(app: AppHandle, params: Vec<String>) -> Result<(), String> {
     let python_path = std::env::var("PYTHON_PATH")
         .unwrap_or_else(|_| "python".to_string());
 
@@ -30,18 +63,24 @@ async fn run_python_script(
         }
     }
 
-    // 设置工作目录为脚本所在目录
-    let script_dir = std::path::Path::new(&script_path)
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let project_root = resolve_project_root()?;
+    let script_path = project_root.join("wx-ribao.py");
+    if !script_path.is_file() {
+        return Err(format!(
+            "未找到脚本: {}，请确保 wx-ribao.py 在项目根目录",
+            script_path.display()
+        ));
+    }
+    let script_path = script_path
+        .canonicalize()
+        .map_err(|e| format!("脚本路径无效: {}", e))?;
 
     let mut cmd = Command::new(&python_path);
     cmd.arg(&script_path);
     for param in &params {
         cmd.arg(param);
     }
-    cmd.current_dir(&script_dir);
+    cmd.current_dir(&project_root);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
@@ -117,7 +156,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![run_python_script, kill_python_script])
+        .invoke_handler(tauri::generate_handler![run_wx_ribao, kill_python_script])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
