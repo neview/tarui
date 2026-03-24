@@ -33,6 +33,7 @@ export default function Kuaishou() {
   const [qrStatus, setQrStatus] = useState("正在获取二维码...");
   const [qrImgLoading, setQrImgLoading] = useState(true);
   const [qrImgError, setQrImgError] = useState(false);
+  const [qrFetching, setQrFetching] = useState(false);
 
   const [pupilOffset, setPupilOffset] = useState({ x: 0, y: 0 });
   const eyeLeftRef = useRef<HTMLDivElement>(null);
@@ -68,7 +69,9 @@ export default function Kuaishou() {
   }, [qrModalOpen]);
 
   useEffect(() => {
-    if (qrModalOpen) {
+    if (countdownRef.current) clearInterval(countdownRef.current);
+
+    if (qrModalOpen && !qrFetching) {
       setCountdown(QR_TOTAL_SECONDS);
       countdownRef.current = setInterval(() => {
         setCountdown((prev) => {
@@ -79,19 +82,19 @@ export default function Kuaishou() {
           return prev - 1;
         });
       }, 1000);
-    } else {
-      if (countdownRef.current) clearInterval(countdownRef.current);
     }
+
     return () => {
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
-  }, [qrModalOpen]);
+  }, [qrModalOpen, qrFetching]);
 
   const closeQrModal = useCallback(() => {
     setQrModalOpen(false);
     setQrCode("");
     setQrImgLoading(true);
     setQrImgError(false);
+    setQrFetching(false);
     if (countdownRef.current) clearInterval(countdownRef.current);
   }, []);
 
@@ -133,6 +136,13 @@ export default function Kuaishou() {
     setLogs([]);
     setLoading(true);
 
+    setQrFetching(true);
+    setQrCode("");
+    setQrImgLoading(true);
+    setQrImgError(false);
+    setQrModalOpen(true);
+    setQrStatus("正在连接服务器，请稍候...");
+
     try {
       const result: Record<string, unknown> = await getWxRibao({
         startDate: formData.startDate,
@@ -147,6 +157,8 @@ export default function Kuaishou() {
       const message = result.message as string | undefined;
 
       if (code !== 1) {
+        setQrFetching(false);
+        closeQrModal();
         showError(message || "请求失败，请稍后重试");
         return;
       }
@@ -156,6 +168,7 @@ export default function Kuaishou() {
         ((result.data as Record<string, unknown> | undefined)?.imageUrl as string);
 
       if (imageUrl) {
+        setQrFetching(false);
         handleImageResult(imageUrl);
         return;
       }
@@ -164,18 +177,27 @@ export default function Kuaishou() {
       if (data) {
         switch (data.type) {
           case "image":
+            setQrFetching(false);
             handleImageResult(data.imageUrl);
             break;
           case "log":
+            setQrFetching(false);
+            closeQrModal();
             handleLogResult(data);
             break;
           default:
+            setQrFetching(false);
+            closeQrModal();
             showError(`未知的响应类型: ${(data as { type: string }).type}`);
         }
       } else {
+        setQrFetching(false);
+        closeQrModal();
         showSuccess(message || "操作成功");
       }
     } catch (err) {
+      setQrFetching(false);
+      closeQrModal();
       const msg = err instanceof Error ? err.message : String(err);
       showError(msg);
     } finally {
@@ -332,29 +354,37 @@ export default function Kuaishou() {
 
                   {/* 二维码区域 + 方形进度边框 */}
                   <div className="relative flex justify-center py-3">
-                    {/* 背景发光 */}
-                    <div
-                      className="absolute top-1/2 left-1/2 rounded-2xl opacity-20 -z-0"
-                      style={{
-                        width: qrBoxSize + 40,
-                        height: qrBoxSize + 40,
-                        background: `radial-gradient(circle, ${timerColor}66, transparent 70%)`,
-                        transform: "translate(-50%, -50%)",
-                        filter: "blur(18px)",
-                        transition: "background 0.5s",
-                      }}
-                    />
+                    {/* 背景发光 - fetching 时隐藏 */}
+                    {!qrFetching && (
+                      <motion.div
+                        className="absolute top-1/2 left-1/2 rounded-2xl -z-0"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 0.2 }}
+                        transition={{ duration: 0.5 }}
+                        style={{
+                          width: qrBoxSize + 40,
+                          height: qrBoxSize + 40,
+                          background: `radial-gradient(circle, ${timerColor}66, transparent 70%)`,
+                          transform: "translate(-50%, -50%)",
+                          filter: "blur(18px)",
+                          transition: "background 0.5s",
+                        }}
+                      />
+                    )}
 
                     <div className="relative" style={{ width: svgSize, height: svgSize }}>
-                      {/* SVG 圆角矩形进度边框 */}
+                      {/* SVG 圆角矩形进度边框 - fetching 时隐藏 */}
                       <svg
                         className="absolute inset-0 pointer-events-none"
                         width={svgSize}
                         height={svgSize}
                         viewBox={`0 0 ${svgSize} ${svgSize}`}
                         fill="none"
+                        style={{
+                          opacity: qrFetching ? 0 : 1,
+                          transition: "opacity 0.4s ease",
+                        }}
                       >
-                        {/* 底部轨道 */}
                         <rect
                           x={half}
                           y={half}
@@ -366,7 +396,6 @@ export default function Kuaishou() {
                           className="text-gray-200 dark:text-gray-700"
                           strokeWidth={borderStroke}
                         />
-                        {/* 进度边框 - 从左上角顺时针缩短 */}
                         <rect
                           x={half}
                           y={half}
@@ -404,44 +433,112 @@ export default function Kuaishou() {
                             transition: "opacity 0.5s",
                           }}
                         >
-                          {qrImgLoading && !qrImgError && (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 z-10">
-                              <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
-                              <span className="text-xs text-gray-400">努力加载中...</span>
-                            </div>
-                          )}
-
-                          {qrImgError ? (
-                            <div className="flex h-full w-full flex-col items-center justify-center gap-3">
+                          <AnimatePresence mode="wait">
+                            {qrFetching ? (
+                              /* ——— 心电图等待动画 ——— */
                               <motion.div
-                                animate={{ rotate: [0, -10, 10, -10, 0] }}
-                                transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+                                key="heartbeat"
+                                className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0, scale: 0.9 }}
+                                transition={{ duration: 0.3 }}
                               >
-                                <AlertCircle className="h-12 w-12 text-red-400" />
-                              </motion.div>
-                              <span className="text-sm text-red-400 font-medium">图片加载失败</span>
-                            </div>
-                          ) : (
-                            <img
-                              src={qrCode}
-                              alt="登录二维码"
-                              className="block"
-                              style={{
-                                width: "100%",
-                                height: "100%",
-                                objectFit: "contain",
-                                opacity: qrImgLoading ? 0 : 1,
-                                transition: "opacity 0.4s ease",
-                              }}
-                              onLoad={() => setQrImgLoading(false)}
-                              onError={() => {
-                                setQrImgLoading(false);
-                                setQrImgError(true);
-                              }}
-                            />
-                          )}
+                                <svg
+                                  width="160" height="60" viewBox="0 0 160 60"
+                                  className="overflow-visible"
+                                  style={{ animation: "qr-heartbeat-glow 2s ease-in-out infinite" }}
+                                >
+                                  <path
+                                    d="M0,30 L20,30 L28,30 L35,10 L42,50 L49,5 L56,55 L63,20 L70,30 L80,30 L90,30 L97,15 L104,45 L111,10 L118,50 L125,25 L132,30 L160,30"
+                                    fill="none"
+                                    stroke="url(#heartbeat-grad)"
+                                    strokeWidth="2.5"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeDasharray="320"
+                                    style={{ animation: "qr-heartbeat-draw 2s linear infinite" }}
+                                  />
+                                  <defs>
+                                    <linearGradient id="heartbeat-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                                      <stop offset="0%" stopColor="#6366f1" stopOpacity="0.1" />
+                                      <stop offset="30%" stopColor="#6366f1" />
+                                      <stop offset="50%" stopColor="#ec4899" />
+                                      <stop offset="70%" stopColor="#6366f1" />
+                                      <stop offset="100%" stopColor="#6366f1" stopOpacity="0.1" />
+                                    </linearGradient>
+                                  </defs>
+                                </svg>
 
-                          {expired && (
+                                <div className="flex items-center gap-1.5">
+                                  {[0, 1, 2].map((i) => (
+                                    <div
+                                      key={i}
+                                      className="w-1.5 h-1.5 rounded-full bg-indigo-400"
+                                      style={{
+                                        animation: "qr-heartbeat-dot 1.4s ease-in-out infinite",
+                                        animationDelay: `${i * 0.3}s`,
+                                      }}
+                                    />
+                                  ))}
+                                  <span className="text-xs text-gray-400 dark:text-gray-500 ml-1">
+                                    正在获取二维码
+                                  </span>
+                                </div>
+                              </motion.div>
+                            ) : qrImgError ? (
+                              /* ——— 加载失败 ——— */
+                              <motion.div
+                                key="error"
+                                className="flex h-full w-full flex-col items-center justify-center gap-3"
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                              >
+                                <motion.div
+                                  animate={{ rotate: [0, -10, 10, -10, 0] }}
+                                  transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+                                >
+                                  <AlertCircle className="h-12 w-12 text-red-400" />
+                                </motion.div>
+                                <span className="text-sm text-red-400 font-medium">图片加载失败</span>
+                              </motion.div>
+                            ) : (
+                              /* ——— 二维码图片 ——— */
+                              <motion.div
+                                key="qrcode"
+                                className="w-full h-full relative"
+                                initial={{ opacity: 0, scale: 0.9 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                transition={{ duration: 0.4, ease: "easeOut" }}
+                              >
+                                {qrImgLoading && (
+                                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 z-10">
+                                    <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
+                                    <span className="text-xs text-gray-400">图片加载中...</span>
+                                  </div>
+                                )}
+                                <img
+                                  src={qrCode}
+                                  alt="登录二维码"
+                                  className="block"
+                                  style={{
+                                    width: "100%",
+                                    height: "100%",
+                                    objectFit: "contain",
+                                    opacity: qrImgLoading ? 0 : 1,
+                                    transition: "opacity 0.4s ease",
+                                  }}
+                                  onLoad={() => setQrImgLoading(false)}
+                                  onError={() => {
+                                    setQrImgLoading(false);
+                                    setQrImgError(true);
+                                  }}
+                                />
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
+                          {expired && !qrFetching && (
                             <div
                               className="absolute inset-0 flex items-center justify-center bg-black/50"
                               style={{ borderRadius: borderRadius - 4 }}

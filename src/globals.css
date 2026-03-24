@@ -167,6 +167,21 @@ html {
   100% { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
+@keyframes qr-heartbeat-draw {
+  0% { stroke-dashoffset: 320; }
+  100% { stroke-dashoffset: -320; }
+}
+
+@keyframes qr-heartbeat-dot {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+@keyframes qr-heartbeat-glow {
+  0%, 100% { filter: drop-shadow(0 0 2px rgba(99, 102, 241, 0.3)); }
+  50% { filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.6)); }
+}
+
 @property --qr-angle {
   syntax: "<angle>";
   initial-value: 0deg;
