@@ -11,7 +11,6 @@ export interface ReleaseVersionParams {
   desc: string;
 }
 
-/** 接口返回格式：{ code, message, log } */
 export interface ReleaseVersionResponse {
   code: number;
   message: string;
@@ -28,11 +27,16 @@ export interface WxRibaoParams {
 }
 
 export interface WxRibaoResponse {
-  status: number;
-  message: string;
+  code?: number;
+  status?: number;
+  message?: string;
+  imageUrl?: string;
   data?: {
-    formatted_text: string;
-    count: number;
+    type: "image" | "log";
+    imageUrl?: string;
+    logs?: string[];
+    formatted_text?: string;
+    count?: number;
   };
 }
 
@@ -40,21 +44,21 @@ export interface HealthResponse {
   status: string;
 }
 
+export interface CaptureQrResponse {
+  success: boolean;
+  qr_code?: string;
+  error?: string;
+}
+
 export async function releaseVersion(
   params: ReleaseVersionParams
 ): Promise<ReleaseVersionResponse> {
-  const res = await alovaInstance.Post("/api/release-version", params);
-  const raw = res as Response;
-  const text = await raw.text();
-  if (!text?.trim()) {
-    return { code: 0, message: "响应为空" };
-  }
-  try {
-    return JSON.parse(text) as ReleaseVersionResponse;
-  } catch {
-    return { code: 0, message: "响应格式错误" };
-  }
+  return alovaInstance.Post<ReleaseVersionResponse>("/api/release-version", params);
 }
+
+export const captureQr = () => {
+  return alovaInstance.Post<CaptureQrResponse>("/api/capture-qr");
+};
 
 export const getWxRibao = (params: WxRibaoParams) => {
   return alovaInstance.Post<WxRibaoResponse>("/api/wx-ribao", params);

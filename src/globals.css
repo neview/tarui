@@ -113,3 +113,62 @@ html {
     background-position: 0% 0%;
   }
 }
+
+/* ===== QR 弹框 - 生命体动效 ===== */
+
+@keyframes qr-breathe {
+  0%, 100% {
+    box-shadow:
+      0 0 20px rgba(99, 102, 241, 0.15),
+      0 0 60px rgba(99, 102, 241, 0.08),
+      0 8px 32px rgba(0, 0, 0, 0.12);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow:
+      0 0 30px rgba(99, 102, 241, 0.3),
+      0 0 80px rgba(139, 92, 246, 0.15),
+      0 12px 40px rgba(0, 0, 0, 0.15);
+    transform: scale(1.008);
+  }
+}
+
+@keyframes qr-float {
+  0%, 100% { transform: translateY(0px); }
+  33% { transform: translateY(-6px); }
+  66% { transform: translateY(3px); }
+}
+
+@keyframes qr-border-spin {
+  0% { --qr-angle: 0deg; }
+  100% { --qr-angle: 360deg; }
+}
+
+@keyframes qr-blink {
+  0%, 42%, 44%, 96%, 100% { transform: scaleY(1); }
+  43% { transform: scaleY(0.08); }
+  97% { transform: scaleY(0.08); }
+}
+
+/* qr-pupil-wander removed: pupils now follow mouse cursor */
+
+@keyframes qr-sparkle {
+  0%, 100% { opacity: 0; transform: scale(0) rotate(0deg); }
+  50% { opacity: 1; transform: scale(1) rotate(180deg); }
+}
+
+@keyframes qr-wave {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+@keyframes qr-glow-ring {
+  0% { transform: translate(-50%, -50%) rotate(0deg); }
+  100% { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+@property --qr-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}

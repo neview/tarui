@@ -44,7 +44,7 @@ export const Meteors = ({
         // Meteor Head
         <span
           key={idx}
-          style={{ ...style }}
+          style={{ ...style, zIndex: 0 }}
           className={cn(
             "animate-meteor pointer-events-none absolute size-0.5 rotate-(--angle) rounded-full bg-zinc-500 shadow-[0_0_0_1px_#ffffff10]",
             className
