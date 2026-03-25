@@ -3,10 +3,11 @@ import { WxRibaoForm, WxRibaoFormData } from "../KuaishouForm";
 
 interface KuaishouCardProps {
   onSubmit?: (data: WxRibaoFormData) => void;
+  onCancel?: () => void;
   loading?: boolean;
 }
 
-export function KuaishouCard({ onSubmit, loading }: KuaishouCardProps) {
+export function KuaishouCard({ onSubmit, onCancel, loading }: KuaishouCardProps) {
   return (
     <div className="relative isolate w-full overflow-hidden rounded-xl">
       <ShineBorder
@@ -24,7 +25,7 @@ export function KuaishouCard({ onSubmit, loading }: KuaishouCardProps) {
             获取指定日期范围内的微信文档日报
           </p>
         </div>
-        <WxRibaoForm onSubmit={onSubmit} loading={loading} />
+        <WxRibaoForm onSubmit={onSubmit} onCancel={onCancel} loading={loading} />
       </div>
     </div>
   );

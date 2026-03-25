@@ -24,6 +24,7 @@ export interface WxRibaoFormData {
 
 interface WxRibaoFormProps {
   onSubmit?: (data: WxRibaoFormData) => void;
+  onCancel?: () => void;
   loading?: boolean;
 }
 
@@ -32,7 +33,7 @@ interface FormErrors {
   endDate?: string;
 }
 
-export function WxRibaoForm({ onSubmit, loading }: WxRibaoFormProps) {
+export function WxRibaoForm({ onSubmit, onCancel, loading }: WxRibaoFormProps) {
   const [outputFormat, setOutputFormat] = useState<"1" | "2">("1");
   const [indentInTheLine, setIndentInTheLine] = useState(false);
   const [startDate, setStartDate] = useState("");
@@ -165,10 +166,14 @@ export function WxRibaoForm({ onSubmit, loading }: WxRibaoFormProps) {
           <Button
             type="button"
             className="w-full bg-red-500 hover:bg-red-600"
-            disabled
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onCancel?.();
+            }}
           >
             <Square className="h-4 w-4 mr-2" />
-            处理中...
+            取消执行
           </Button>
         ) : (
           <Button type="submit" className="w-full">

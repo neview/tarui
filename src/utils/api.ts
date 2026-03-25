@@ -27,17 +27,20 @@ export interface WxRibaoParams {
 }
 
 export interface WxRibaoResponse {
-  code?: number;
-  status?: number;
+  sessionId: string;
+}
+
+export interface WxRibaoLogEntry {
+  time: string;
+  msg: string;
+}
+
+export interface WxRibaoStatusResponse {
+  status: "pending" | "waiting" | "need_login" | "success" | "expired" | "error" | "cancelled";
   message?: string;
+  logs?: WxRibaoLogEntry[];
   imageUrl?: string;
-  data?: {
-    type: "image" | "log";
-    imageUrl?: string;
-    logs?: string[];
-    formatted_text?: string;
-    count?: number;
-  };
+  data?: string | string[];
 }
 
 export interface HealthResponse {
@@ -62,6 +65,17 @@ export const captureQr = () => {
 
 export const getWxRibao = (params: WxRibaoParams) => {
   return alovaInstance.Post<WxRibaoResponse>("/api/wx-ribao", params);
+};
+
+export const getWxRibaoStatus = (sessionId: string) => {
+  return alovaInstance.Get<WxRibaoStatusResponse>("/api/wx-ribao/status", {
+    params: { sid: sessionId },
+    cacheFor: 0,
+  });
+};
+
+export const cancelWxRibao = (sessionId: string) => {
+  return alovaInstance.Post("/api/wx-ribao/cancel", { sid: sessionId });
 };
 
 export const healthCheck = () => {

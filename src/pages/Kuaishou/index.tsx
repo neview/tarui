@@ -3,10 +3,9 @@ import { motion, AnimatePresence } from "motion/react";
 import { KuaishouCard } from "./KuaishouCard";
 import { WxRibaoFormData } from "./KuaishouForm";
 import { Alert, useAlert } from "@/components/ui/alert";
-import { AnimatedList } from "@/components/ui/animated-list";
+import { Terminal, Copy, Check, Loader2, AlertCircle } from "lucide-react";
 import { Meteors } from "@/components/ui/meteors";
-import { Loader2, AlertCircle } from "lucide-react";
-import { getWxRibao, type WxRibaoResponse } from "@/utils/api";
+import { getWxRibao, getWxRibaoStatus, cancelWxRibao } from "@/utils/api";
 import styles from "./index.module.scss";
 
 const QR_TOTAL_SECONDS = 120;
@@ -24,16 +23,45 @@ function formatCountdown(s: number): string {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
+function LogTerminal({ logs, loading }: { logs: string[]; loading: boolean }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logs]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="flex-1 min-h-[280px] overflow-y-auto rounded-xl bg-[#1e1e2e] dark:bg-[#0d0d14] p-4 font-mono text-sm leading-relaxed select-text"
+    >
+      {logs.length === 0 && !loading ? (
+        <span className="text-gray-500">执行操作后将在此显示日志...</span>
+      ) : (
+        <>
+          <pre className="whitespace-pre-wrap break-words text-gray-200">
+            {logs.join("\n")}
+          </pre>
+          {loading && (
+            <span className="inline-block mt-1 text-indigo-400 animate-pulse">▊</span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Kuaishou() {
   const { alert, showSuccess, showError, closeAlert } = useAlert();
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [qrCode, setQrCode] = useState("");
-  const [qrStatus, setQrStatus] = useState("正在获取二维码...");
+  const [qrStatus, setQrStatus] = useState("正在请求接口...");
+  const [copied, setCopied] = useState(false);
   const [qrImgLoading, setQrImgLoading] = useState(true);
   const [qrImgError, setQrImgError] = useState(false);
-  const [qrFetching, setQrFetching] = useState(false);
 
   const [pupilOffset, setPupilOffset] = useState({ x: 0, y: 0 });
   const eyeLeftRef = useRef<HTMLDivElement>(null);
@@ -41,6 +69,12 @@ export default function Kuaishou() {
 
   const [countdown, setCountdown] = useState(QR_TOTAL_SECONDS);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelledRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const lastLogCountRef = useRef(0);
+  const qrShownRef = useRef(false);
 
   useEffect(() => {
     if (!qrModalOpen) return;
@@ -71,7 +105,7 @@ export default function Kuaishou() {
   useEffect(() => {
     if (countdownRef.current) clearInterval(countdownRef.current);
 
-    if (qrModalOpen && !qrFetching) {
+    if (qrModalOpen && qrCode) {
       setCountdown(QR_TOTAL_SECONDS);
       countdownRef.current = setInterval(() => {
         setCountdown((prev) => {
@@ -87,120 +121,163 @@ export default function Kuaishou() {
     return () => {
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
-  }, [qrModalOpen, qrFetching]);
+  }, [qrModalOpen, qrCode]);
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }, []);
 
   const closeQrModal = useCallback(() => {
     setQrModalOpen(false);
     setQrCode("");
     setQrImgLoading(true);
     setQrImgError(false);
-    setQrFetching(false);
     if (countdownRef.current) clearInterval(countdownRef.current);
   }, []);
 
-  const handleImageResult = (imageUrl: string | undefined) => {
-    if (!imageUrl) {
-      showError("二维码地址为空，请重试");
-      return;
+  const cancelAll = useCallback(() => {
+    cancelledRef.current = true;
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
     }
-    setQrImgLoading(true);
-    setQrImgError(false);
-    setQrCode(imageUrl);
-    setQrModalOpen(true);
-    setQrStatus("请用微信扫码登录（有效期约2分钟）");
-    showSuccess("二维码获取成功，请在手机上扫码");
-  };
+    stopPolling();
+    closeQrModal();
 
-  const handleLogResult = (data: NonNullable<WxRibaoResponse["data"]>) => {
-    const entries: string[] = [];
-
-    if (data.logs?.length) {
-      entries.push(...data.logs);
-    }
-    if (data.formatted_text) {
-      entries.push(data.formatted_text);
-    }
-    if (data.count !== undefined) {
-      entries.push(`共处理 ${data.count} 条记录`);
+    const sid = sessionIdRef.current;
+    if (sid) {
+      cancelWxRibao(sid).catch(() => {});
+      sessionIdRef.current = null;
     }
 
-    if (entries.length > 0) {
-      setLogs(entries);
-      showSuccess("日报获取完成");
-    } else {
-      showSuccess("脚本执行完成，但未返回日志内容");
-    }
-  };
+    setLogs((prev) => [...prev, "⏹ 已取消执行"]);
+    setLoading(false);
+    lastLogCountRef.current = 0;
+    qrShownRef.current = false;
+    console.log("[wx-ribao] 用户取消了所有操作");
+  }, [stopPolling, closeQrModal]);
+
+  const startPolling = useCallback((sessionId: string) => {
+    stopPolling();
+    lastLogCountRef.current = 0;
+    qrShownRef.current = false;
+
+    pollingRef.current = setInterval(async () => {
+      if (cancelledRef.current || abortRef.current?.signal.aborted) {
+        stopPolling();
+        return;
+      }
+      try {
+        const res = await getWxRibaoStatus(sessionId);
+        if (cancelledRef.current || abortRef.current?.signal.aborted) return;
+        console.log("[wx-ribao] 轮询状态:", res);
+
+        if (res.logs && res.logs.length > lastLogCountRef.current) {
+          const newEntries = res.logs.slice(lastLogCountRef.current);
+          const formatted = newEntries.map((l) => `[${l.time}] ${l.msg}`);
+          setLogs((prev) => [...prev, ...formatted]);
+          lastLogCountRef.current = res.logs.length;
+
+          if (newEntries.some((l) => l.msg.includes("扫码成功"))) {
+            closeQrModal();
+          }
+        }
+
+        if (res.status === "need_login" && res.imageUrl && !qrShownRef.current) {
+          qrShownRef.current = true;
+          setQrImgLoading(true);
+          setQrImgError(false);
+          setQrCode(res.imageUrl);
+          setQrModalOpen(true);
+          setQrStatus("请用微信扫码登录（有效期约2分钟）");
+        }
+
+        if (["success", "expired", "error", "cancelled"].includes(res.status)) {
+          stopPolling();
+
+          switch (res.status) {
+            case "success":
+              closeQrModal();
+              if (res.data) {
+                const entries = Array.isArray(res.data) ? res.data : [res.data];
+                setLogs((prev) => [...prev, "───────────────────", ...entries]);
+              }
+              showSuccess("日报获取完成");
+              break;
+            case "expired":
+              setQrStatus("⏰ 二维码已过期，请重新获取");
+              showError(res.message || "二维码已过期");
+              break;
+            case "error":
+              closeQrModal();
+              showError(res.message || "执行过程出错");
+              break;
+            case "cancelled":
+              closeQrModal();
+              setLogs((prev) => [...prev, "⏹ 任务已被取消"]);
+              break;
+          }
+          setLoading(false);
+          sessionIdRef.current = null;
+        }
+      } catch (err) {
+        if (cancelledRef.current || abortRef.current?.signal.aborted) return;
+        stopPolling();
+        closeQrModal();
+        showError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      }
+    }, 2000);
+  }, [stopPolling, closeQrModal, showSuccess, showError]);
 
   const handleFormSubmit = async (formData: WxRibaoFormData) => {
+    if (cancelledRef.current === false && loading) return;
+
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     setLogs([]);
     setLoading(true);
+    cancelledRef.current = false;
+    stopPolling();
+    sessionIdRef.current = null;
+    lastLogCountRef.current = 0;
+    qrShownRef.current = false;
 
-    setQrFetching(true);
-    setQrCode("");
-    setQrImgLoading(true);
-    setQrImgError(false);
-    setQrModalOpen(true);
-    setQrStatus("正在连接服务器，请稍候...");
+    setLogs(["▶ 正在请求服务器..."]);
 
     try {
-      const result: Record<string, unknown> = await getWxRibao({
+      const result = await getWxRibao({
         startDate: formData.startDate,
         endDate: formData.endDate,
         outputFormat: formData.outputFormat,
         indentInTheLine: formData.indentInTheLine ? "True" : "False",
       });
 
+      if (cancelledRef.current || ac.signal.aborted) return;
       console.log("[wx-ribao] 接口返回:", result);
 
-      const code = (result.code ?? result.status) as number | undefined;
-      const message = result.message as string | undefined;
-
-      if (code !== 1) {
-        setQrFetching(false);
-        closeQrModal();
-        showError(message || "请求失败，请稍后重试");
+      if (!result.sessionId) {
+        setLogs((prev) => [...prev, "✖ 服务器未返回 sessionId"]);
+        showError("服务器未返回有效的会话ID");
+        setLoading(false);
         return;
       }
 
-      const imageUrl =
-        (result.imageUrl as string) ??
-        ((result.data as Record<string, unknown> | undefined)?.imageUrl as string);
-
-      if (imageUrl) {
-        setQrFetching(false);
-        handleImageResult(imageUrl);
-        return;
-      }
-
-      const data = result.data as WxRibaoResponse["data"];
-      if (data) {
-        switch (data.type) {
-          case "image":
-            setQrFetching(false);
-            handleImageResult(data.imageUrl);
-            break;
-          case "log":
-            setQrFetching(false);
-            closeQrModal();
-            handleLogResult(data);
-            break;
-          default:
-            setQrFetching(false);
-            closeQrModal();
-            showError(`未知的响应类型: ${(data as { type: string }).type}`);
-        }
-      } else {
-        setQrFetching(false);
-        closeQrModal();
-        showSuccess(message || "操作成功");
-      }
+      sessionIdRef.current = result.sessionId;
+      setLogs((prev) => [...prev, "✔ 已建立会话，开始轮询执行状态..."]);
+      startPolling(result.sessionId);
     } catch (err) {
-      setQrFetching(false);
-      closeQrModal();
+      if (cancelledRef.current || ac.signal.aborted) return;
       const msg = err instanceof Error ? err.message : String(err);
+      setLogs((prev) => [...prev, `✖ 请求异常: ${msg}`]);
       showError(msg);
-    } finally {
       setLoading(false);
     }
   };
@@ -217,10 +294,34 @@ export default function Kuaishou() {
         }
       >
         <div className="min-w-0">
-          <KuaishouCard onSubmit={handleFormSubmit} loading={loading} />
+          <KuaishouCard onSubmit={handleFormSubmit} onCancel={cancelAll} loading={loading} />
         </div>
         <div className="flex flex-col min-h-0 min-w-0">
-          <AnimatedList logs={logs} title="运行日志" />
+          <div className="h-full min-h-0 flex flex-col">
+            <div className="flex items-center justify-between mb-3 flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-muted-foreground" />
+                <span className="text-sm font-medium text-muted-foreground">执行日志</span>
+                {loading && (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                )}
+              </div>
+              {logs.length > 0 && (
+                <button
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-muted cursor-pointer"
+                  onClick={() => {
+                    navigator.clipboard.writeText(logs.join("\n"));
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  }}
+                >
+                  {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copied ? "已复制" : "复制"}
+                </button>
+              )}
+            </div>
+            <LogTerminal logs={logs} loading={loading} />
+          </div>
         </div>
       </div>
 
@@ -354,36 +455,28 @@ export default function Kuaishou() {
 
                   {/* 二维码区域 + 方形进度边框 */}
                   <div className="relative flex justify-center py-3">
-                    {/* 背景发光 - fetching 时隐藏 */}
-                    {!qrFetching && (
-                      <motion.div
-                        className="absolute top-1/2 left-1/2 rounded-2xl -z-0"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 0.2 }}
-                        transition={{ duration: 0.5 }}
-                        style={{
-                          width: qrBoxSize + 40,
-                          height: qrBoxSize + 40,
-                          background: `radial-gradient(circle, ${timerColor}66, transparent 70%)`,
-                          transform: "translate(-50%, -50%)",
-                          filter: "blur(18px)",
-                          transition: "background 0.5s",
-                        }}
-                      />
-                    )}
+                    <motion.div
+                      className="absolute top-1/2 left-1/2 rounded-2xl -z-0"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 0.2 }}
+                      transition={{ duration: 0.5 }}
+                      style={{
+                        width: qrBoxSize + 40,
+                        height: qrBoxSize + 40,
+                        background: `radial-gradient(circle, ${timerColor}66, transparent 70%)`,
+                        transform: "translate(-50%, -50%)",
+                        filter: "blur(18px)",
+                        transition: "background 0.5s",
+                      }}
+                    />
 
                     <div className="relative" style={{ width: svgSize, height: svgSize }}>
-                      {/* SVG 圆角矩形进度边框 - fetching 时隐藏 */}
                       <svg
                         className="absolute inset-0 pointer-events-none"
                         width={svgSize}
                         height={svgSize}
                         viewBox={`0 0 ${svgSize} ${svgSize}`}
                         fill="none"
-                        style={{
-                          opacity: qrFetching ? 0 : 1,
-                          transition: "opacity 0.4s ease",
-                        }}
                       >
                         <rect
                           x={half}
@@ -434,59 +527,7 @@ export default function Kuaishou() {
                           }}
                         >
                           <AnimatePresence mode="wait">
-                            {qrFetching ? (
-                              /* ——— 心电图等待动画 ——— */
-                              <motion.div
-                                key="heartbeat"
-                                className="absolute inset-0 flex flex-col items-center justify-center gap-4"
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                exit={{ opacity: 0, scale: 0.9 }}
-                                transition={{ duration: 0.3 }}
-                              >
-                                <svg
-                                  width="160" height="60" viewBox="0 0 160 60"
-                                  className="overflow-visible"
-                                  style={{ animation: "qr-heartbeat-glow 2s ease-in-out infinite" }}
-                                >
-                                  <path
-                                    d="M0,30 L20,30 L28,30 L35,10 L42,50 L49,5 L56,55 L63,20 L70,30 L80,30 L90,30 L97,15 L104,45 L111,10 L118,50 L125,25 L132,30 L160,30"
-                                    fill="none"
-                                    stroke="url(#heartbeat-grad)"
-                                    strokeWidth="2.5"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeDasharray="320"
-                                    style={{ animation: "qr-heartbeat-draw 2s linear infinite" }}
-                                  />
-                                  <defs>
-                                    <linearGradient id="heartbeat-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-                                      <stop offset="0%" stopColor="#6366f1" stopOpacity="0.1" />
-                                      <stop offset="30%" stopColor="#6366f1" />
-                                      <stop offset="50%" stopColor="#ec4899" />
-                                      <stop offset="70%" stopColor="#6366f1" />
-                                      <stop offset="100%" stopColor="#6366f1" stopOpacity="0.1" />
-                                    </linearGradient>
-                                  </defs>
-                                </svg>
-
-                                <div className="flex items-center gap-1.5">
-                                  {[0, 1, 2].map((i) => (
-                                    <div
-                                      key={i}
-                                      className="w-1.5 h-1.5 rounded-full bg-indigo-400"
-                                      style={{
-                                        animation: "qr-heartbeat-dot 1.4s ease-in-out infinite",
-                                        animationDelay: `${i * 0.3}s`,
-                                      }}
-                                    />
-                                  ))}
-                                  <span className="text-xs text-gray-400 dark:text-gray-500 ml-1">
-                                    正在获取二维码
-                                  </span>
-                                </div>
-                              </motion.div>
-                            ) : qrImgError ? (
+                            {qrImgError ? (
                               /* ——— 加载失败 ——— */
                               <motion.div
                                 key="error"
@@ -538,7 +579,7 @@ export default function Kuaishou() {
                             )}
                           </AnimatePresence>
 
-                          {expired && !qrFetching && (
+                          {expired && (
                             <div
                               className="absolute inset-0 flex items-center justify-center bg-black/50"
                               style={{ borderRadius: borderRadius - 4 }}
