@@ -187,3 +187,8 @@ html {
   initial-value: 0deg;
   inherits: false;
 }
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

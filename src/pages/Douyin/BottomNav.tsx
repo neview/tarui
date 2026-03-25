@@ -10,12 +10,16 @@ const navItems = [
   { icon: Settings, label: "设置" },
 ];
 
-export default function BottomNav() {
-  const [active, setActive] = useState(0);
+interface BottomNavProps {
+  active: number;
+  onChange: (index: number, iconCenterX: number) => void;
+}
+
+export default function BottomNav({ active, onChange }: BottomNavProps) {
   const navRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [spotX, setSpotX] = useState<number | null>(null);
-  const [isFirstRender, setIsFirstRender] = useState(true);
+  const isFirstRenderRef = useRef(true);
 
   const measure = useCallback(() => {
     const btn = itemRefs.current[active];
@@ -29,10 +33,22 @@ export default function BottomNav() {
 
   useLayoutEffect(() => {
     measure();
-    if (isFirstRender) {
-      requestAnimationFrame(() => setIsFirstRender(false));
+    if (isFirstRenderRef.current) {
+      requestAnimationFrame(() => {
+        isFirstRenderRef.current = false;
+      });
     }
-  }, [measure, isFirstRender]);
+  }, [measure]);
+
+  const handleClick = (index: number) => {
+    const btn = itemRefs.current[index];
+    if (btn) {
+      const rect = btn.getBoundingClientRect();
+      onChange(index, rect.left + rect.width / 2);
+    } else {
+      onChange(index, window.innerWidth / 2);
+    }
+  };
 
   return (
     <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-50">
@@ -57,13 +73,12 @@ export default function BottomNav() {
             initial={false}
             animate={{ left: spotX }}
             transition={
-              isFirstRender
+              isFirstRenderRef.current
                 ? { duration: 0 }
                 : { type: "spring", stiffness: 380, damping: 30, mass: 0.8 }
             }
             style={{ width: 0, height: "100%" }}
           >
-            {/* 顶部发光指示条 */}
             <div
               className="absolute -translate-x-1/2"
               style={{
@@ -78,7 +93,6 @@ export default function BottomNav() {
               }}
             />
 
-            {/* 聚光灯光锥 */}
             <div
               className="absolute -translate-x-1/2"
               style={{
@@ -92,7 +106,6 @@ export default function BottomNav() {
               }}
             />
 
-            {/* 底部圆形光影 */}
             <div
               className="absolute -translate-x-1/2"
               style={{
@@ -129,7 +142,7 @@ export default function BottomNav() {
               }}
               animate={{ scale: isActive ? 1.2 : 1 }}
               transition={{ type: "spring", stiffness: 600, damping: 8, mass: 0.5 }}
-              onClick={() => setActive(index)}
+              onClick={() => handleClick(index)}
             >
               <Icon
                 size={22}
@@ -142,7 +155,6 @@ export default function BottomNav() {
                   transition: "color 0.3s ease, filter 0.3s ease, stroke-width 0.3s ease",
                 }}
               />
-              {/* 选中图标下方的椭圆倒影光影 */}
               {isActive && (
                 <div
                   className="absolute"
