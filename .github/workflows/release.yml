@@ -1,0 +1,72 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            label: 'macOS (Apple Silicon)'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+            label: 'macOS (Intel)'
+          - platform: windows-latest
+            args: ''
+            label: 'Windows'
+
+    runs-on: ${{ matrix.platform }}
+    name: Build - ${{ matrix.label }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'tauri-app v__VERSION__'
+          releaseBody: |
+            ## 下载说明
+            - **Windows**: 下载 `.exe` 或 `.msi` 文件
+            - **macOS (Apple Silicon M1/M2/M3)**: 下载 `aarch64.dmg` 文件
+            - **macOS (Intel)**: 下载 `x64.dmg` 文件
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
