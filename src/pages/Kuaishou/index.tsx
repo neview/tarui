@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { KuaishouCard } from "./KuaishouCard";
 import { WxRibaoFormData } from "./KuaishouForm";
 import { Alert, useAlert } from "@/components/ui/alert";
-import { Terminal, Copy, Check, Loader2, AlertCircle } from "lucide-react";
+import { ScrollText, Copy, Check, Loader2, AlertCircle } from "lucide-react";
 import { Meteors } from "@/components/ui/meteors";
 import { getWxRibao, getWxRibaoStatus, cancelWxRibao } from "@/utils/api";
 import styles from "./index.module.scss";
@@ -23,7 +23,7 @@ function formatCountdown(s: number): string {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
-function LogTerminal({ logs, loading }: { logs: string[]; loading: boolean }) {
+function LogPanel({ logs, loading }: { logs: string[]; loading: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,22 +31,36 @@ function LogTerminal({ logs, loading }: { logs: string[]; loading: boolean }) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [logs]);
 
+  const isSeparator = (line: string) => /^[─━─\-=]{3,}$/.test(line.trim());
+
   return (
     <div
       ref={containerRef}
-      className="flex-1 min-h-[280px] overflow-y-auto rounded-xl bg-[#1e1e2e] dark:bg-[#0d0d14] p-4 font-mono text-sm leading-relaxed select-text"
+      className="flex-1 min-h-[280px] overflow-y-auto rounded-xl border border-border bg-muted/30 dark:bg-muted/10 p-4 text-sm leading-relaxed select-text"
     >
       {logs.length === 0 && !loading ? (
-        <span className="text-gray-500">执行操作后将在此显示日志...</span>
+        <span className="text-muted-foreground">执行操作后将在此显示日志...</span>
       ) : (
-        <>
-          <pre className="whitespace-pre-wrap break-words text-gray-200">
-            {logs.join("\n")}
-          </pre>
-          {loading && (
-            <span className="inline-block mt-1 text-indigo-400 animate-pulse">▊</span>
+        <div>
+          {logs.map((line, i) =>
+            isSeparator(line) ? (
+              <hr key={i} className="my-2 border-border" />
+            ) : (
+              <div
+                key={i}
+                className="py-[3px] break-words text-foreground/85"
+                style={{ whiteSpace: "pre-wrap" }}
+              >
+                {line}
+              </div>
+            )
           )}
-        </>
+          {loading && (
+            <div className="py-[3px]">
+              <span className="inline-block text-indigo-400 animate-pulse">●●●</span>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -203,7 +217,8 @@ export default function Kuaishou() {
               closeQrModal();
               if (res.data) {
                 const entries = Array.isArray(res.data) ? res.data : [res.data];
-                setLogs((prev) => [...prev, "───────────────────", ...entries]);
+                const lines = entries.flatMap((e) => e.split("\n"));
+                setLogs((prev) => [...prev, "───────────────────", ...lines]);
               }
               showSuccess("日报获取完成");
               break;
@@ -300,27 +315,34 @@ export default function Kuaishou() {
           <div className="h-full min-h-0 flex flex-col">
             <div className="flex items-center justify-between mb-3 flex-shrink-0">
               <div className="flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-muted-foreground" />
+                <ScrollText className="w-4 h-4 text-muted-foreground" />
                 <span className="text-sm font-medium text-muted-foreground">执行日志</span>
                 {loading && (
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
                 )}
               </div>
-              {logs.length > 0 && (
-                <button
-                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-muted cursor-pointer"
-                  onClick={() => {
-                    navigator.clipboard.writeText(logs.join("\n"));
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 2000);
-                  }}
-                >
-                  {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                  {copied ? "已复制" : "复制"}
-                </button>
-              )}
+              {logs.length > 0 && (() => {
+                const sepIdx = logs.lastIndexOf("───────────────────");
+                const hasResult = sepIdx !== -1 && sepIdx < logs.length - 1;
+                return (
+                  <button
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-muted cursor-pointer"
+                    onClick={() => {
+                      const text = hasResult
+                        ? logs.slice(sepIdx + 1).join("\n")
+                        : logs.join("\n");
+                      navigator.clipboard.writeText(text);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                  >
+                    {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                    {copied ? "已复制" : hasResult ? "复制结果" : "复制"}
+                  </button>
+                );
+              })()}
             </div>
-            <LogTerminal logs={logs} loading={loading} />
+            <LogPanel logs={logs} loading={loading} />
           </div>
         </div>
       </div>
