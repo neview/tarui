@@ -334,6 +334,7 @@ async fn call_tencent_cdn_api(
 
 #[derive(serde::Deserialize)]
 struct DeployParams {
+    deploy_id: String,
     project_dir: String,
     build_command: Option<String>,
     cos_secret_id: String,
@@ -462,7 +463,8 @@ async fn run_build_and_deploy(app: AppHandle, params: DeployParams) -> Result<()
         return Err("目标目录中未找到 package.json".to_string());
     }
 
-    let event = "deploy-log";
+    let event: String = format!("deploy-log-{}", params.deploy_id);
+    let event = event.as_str();
 
     // ===== Step 1: Build =====
     let _ = app.emit(event, "[1/5] 正在执行 build 命令...");

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ReactNode } from "react";
+import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -18,6 +18,7 @@ import {
   Settings2,
   Eraser,
   Import,
+  X,
 } from "lucide-react";
 
 // ==================== Data Model ====================
@@ -107,6 +108,18 @@ function GlassCard({ children, className = "" }: { children: ReactNode; classNam
   );
 }
 
+// ==================== Deploy Session ====================
+
+interface DeploySession {
+  id: string;
+  compositeKey: string;
+  label: string;
+  logs: string[];
+  status: "running" | "success" | "error";
+}
+
+let deployCounter = 0;
+
 // ==================== Main Component ====================
 
 export default function Weixin() {
@@ -114,22 +127,13 @@ export default function Weixin() {
   const [config, setConfig] = useState<AllConfig>(loadAllConfig);
   const [globalOpen, setGlobalOpen] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
-  const [deployingKey, setDeployingKey] = useState<string | null>(null);
-  const [deployLabel, setDeployLabel] = useState("");
+  const [sessions, setSessions] = useState<DeploySession[]>([]);
   const [statusMap, setStatusMap] = useState<Record<string, DeployStatus>>({});
-  const [logs, setLogs] = useState<string[]>([]);
   const [collapseAll, setCollapseAll] = useState(0);
-  const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { saveAllConfig(config); }, [config]);
-  useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
 
-  useEffect(() => {
-    const unlisten = listen<string>("deploy-log", (event) => {
-      setLogs((prev) => [...prev, event.payload]);
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, []);
+  const runningKeys = sessions.filter((s) => s.status === "running").map((s) => s.compositeKey);
 
   const updateGlobal = (field: keyof GlobalConfig, value: string) => {
     setConfig((prev) => ({ ...prev, global: { ...prev.global, [field]: value } }));
@@ -159,6 +163,10 @@ export default function Weixin() {
     order: "orderDir",
   };
 
+  const removeSession = useCallback((id: string) => {
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+  }, []);
+
   const handleDeploy = async (projectKey: string, envKey: string) => {
     const g = config.global;
     const env = config.projects[projectKey]?.[envKey];
@@ -167,7 +175,6 @@ export default function Weixin() {
     const dirField = projectDirMap[projectKey];
     const projectDir = g[dirField] as string;
     const projectLabel = PROJECT_GROUPS.find((p) => p.key === projectKey)?.label ?? projectKey;
-
     const envLabel = ENVIRONMENTS.find((e) => e.key === envKey)?.label ?? envKey;
 
     if (!env.buildCommand && !env.cosRegion && !env.cosBucket) {
@@ -181,16 +188,32 @@ export default function Weixin() {
     if (!env.cosBucket) { showError(`请填写「${projectLabel} - ${envLabel}」的 COS Bucket`); return; }
 
     const compositeKey = `${projectKey}-${envKey}`;
-    setDeployingKey(compositeKey);
-    setDeployLabel(`${projectLabel} · ${envLabel}`);
+    const deployId = `${compositeKey}-${++deployCounter}`;
+
+    const session: DeploySession = {
+      id: deployId,
+      compositeKey,
+      label: `${projectLabel} · ${envLabel}`,
+      logs: [],
+      status: "running",
+    };
+
+    setSessions((prev) => [...prev, session]);
     setStatusMap((prev) => ({ ...prev, [compositeKey]: "running" }));
-    setLogs([]);
     setGlobalOpen(false);
     setCollapseAll((n) => n + 1);
+
+    const eventName = `deploy-log-${deployId}`;
+    const unlisten = await listen<string>(eventName, (event) => {
+      setSessions((prev) =>
+        prev.map((s) => s.id === deployId ? { ...s, logs: [...s.logs, event.payload] } : s)
+      );
+    });
 
     try {
       await invoke("run_build_and_deploy", {
         params: {
+          deploy_id: deployId,
           project_dir: projectDir,
           build_command: env.buildCommand || null,
           cos_secret_id: g.secretId,
@@ -202,14 +225,19 @@ export default function Weixin() {
           cdn_domain: env.cdnDomain || null,
         },
       });
+      setSessions((prev) =>
+        prev.map((s) => s.id === deployId ? { ...s, status: "success" } : s)
+      );
       setStatusMap((prev) => ({ ...prev, [compositeKey]: "success" }));
-      showSuccess("部署完成！");
+      showSuccess(`${projectLabel} · ${envLabel} 部署完成！`);
     } catch (err) {
+      setSessions((prev) =>
+        prev.map((s) => s.id === deployId ? { ...s, status: "error", logs: [...s.logs, `错误: ${err}`] } : s)
+      );
       setStatusMap((prev) => ({ ...prev, [compositeKey]: "error" }));
-      setLogs((prev) => [...prev, `错误: ${err}`]);
       showError(String(err));
     } finally {
-      setDeployingKey(null);
+      unlisten();
     }
   };
 
@@ -262,8 +290,6 @@ export default function Weixin() {
       showError(`导入失败: ${err}`);
     }
   };
-
-  const isAnyRunning = deployingKey !== null;
 
   return (
     <div className="h-full overflow-y-auto p-4 relative">
@@ -359,54 +385,135 @@ export default function Weixin() {
             project={project}
             envConfigs={config.projects[project.key] ?? {}}
             statusMap={statusMap}
-            deployingKey={deployingKey}
-            isAnyRunning={isAnyRunning}
+            runningKeys={runningKeys}
             collapseSignal={collapseAll}
             onUpdateEnv={(envKey, field, value) => updateEnv(project.key, envKey, field, value)}
             onDeploy={(envKey) => handleDeploy(project.key, envKey)}
           />
         ))}
 
-        {/* ===== Log Panel ===== */}
-        {logs.length > 0 && (
+        {/* ===== Log Panels ===== */}
+        {sessions.length > 0 && (
           <GlassCard className="overflow-hidden">
             <div className="flex items-center justify-between px-4 py-2.5">
               <span className="text-[13px] font-semibold tracking-wide text-foreground/80">
-                部署日志{deployLabel ? ` — ${deployLabel}` : ""}
+                部署日志
               </span>
               <Button
                 variant="ghost"
                 size="icon-xs"
-                onClick={() => { setLogs([]); }}
-                title="清空日志"
+                onClick={() => setSessions([])}
+                title="清空全部日志"
               >
                 <Eraser className="size-3.5" />
               </Button>
             </div>
             <div className="px-3 pb-3">
-              <div className="bg-[#1a1a2e]/90 dark:bg-black/60 rounded-xl p-3 max-h-[200px] overflow-y-auto font-mono text-[11px] leading-[1.7]">
-                {logs.map((line, i) => (
-                  <div
-                    key={i}
-                    className={
-                      line.includes("✓") || line.includes("完成")
-                        ? "text-emerald-400"
-                        : line.includes("错误") || line.includes("失败")
-                        ? "text-red-400"
-                        : line.startsWith("[")
-                        ? "text-sky-300"
-                        : "text-gray-400"
-                    }
-                  >
-                    {line}
-                  </div>
+              <div className="flex gap-2 transition-all duration-500 ease-out">
+                {sessions.map((session) => (
+                  <LogPanel
+                    key={session.id}
+                    session={session}
+                    count={sessions.length}
+                    onRemove={() => removeSession(session.id)}
+                  />
                 ))}
-                <div ref={logEndRef} />
               </div>
             </div>
           </GlassCard>
         )}
       </div>
+    </div>
+  );
+}
+
+// ==================== Log Panel ====================
+
+function LogPanel({
+  session,
+  count,
+  onRemove,
+}: {
+  session: DeploySession;
+  count: number;
+  onRemove: () => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [session.logs]);
+
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => { el.style.opacity = "1"; el.style.transform = "translateX(0)"; });
+  }, []);
+
+  const statusColor =
+    session.status === "success" ? "text-emerald-400" :
+    session.status === "error" ? "text-red-400" :
+    "text-sky-300";
+
+  const statusDot =
+    session.status === "success" ? "bg-emerald-500" :
+    session.status === "error" ? "bg-red-500" :
+    "bg-amber-500 animate-pulse";
+
+  return (
+    <div
+      ref={panelRef}
+      className="flex flex-col min-w-0 transition-all duration-500 ease-out"
+      style={{
+        flex: `1 1 ${100 / count}%`,
+        opacity: 0,
+        transform: "translateX(40px)",
+      }}
+    >
+      <div className="flex items-center justify-between mb-1.5 px-1">
+        <span className="flex items-center gap-1.5 text-[11px] font-medium text-foreground/70 truncate">
+          <span className={`size-1.5 rounded-full shrink-0 ${statusDot}`} />
+          <span className="truncate">{session.label}</span>
+        </span>
+        {session.status !== "running" && (
+          <button
+            onClick={onRemove}
+            className="shrink-0 p-0.5 rounded hover:bg-white/10 transition-colors"
+            title="关闭"
+          >
+            <X className="size-3 text-muted-foreground" />
+          </button>
+        )}
+      </div>
+      <div
+        ref={scrollRef}
+        className="bg-[#1a1a2e]/90 dark:bg-black/60 rounded-xl p-3 max-h-[200px] overflow-y-auto font-mono text-[11px] leading-[1.7] flex-1"
+      >
+        {session.logs.map((line, i) => (
+          <div
+            key={i}
+            className={
+              line.includes("✓") || line.includes("完成")
+                ? "text-emerald-400"
+                : line.includes("错误") || line.includes("失败")
+                ? "text-red-400"
+                : line.startsWith("[")
+                ? "text-sky-300"
+                : "text-gray-400"
+            }
+          >
+            {line}
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+      {session.status !== "running" && (
+        <div className={`text-[10px] mt-1 px-1 ${statusColor}`}>
+          {session.status === "success" ? "部署完成" : "部署失败"}
+        </div>
+      )}
     </div>
   );
 }
@@ -417,8 +524,7 @@ function ProjectGroup({
   project,
   envConfigs,
   statusMap,
-  deployingKey,
-  isAnyRunning,
+  runningKeys,
   collapseSignal,
   onUpdateEnv,
   onDeploy,
@@ -426,8 +532,7 @@ function ProjectGroup({
   project: (typeof PROJECT_GROUPS)[number];
   envConfigs: Record<string, EnvConfig>;
   statusMap: Record<string, DeployStatus>;
-  deployingKey: string | null;
-  isAnyRunning: boolean;
+  runningKeys: string[];
   collapseSignal: number;
   onUpdateEnv: (envKey: string, field: keyof EnvConfig, value: string) => void;
   onDeploy: (envKey: string) => void;
@@ -475,18 +580,22 @@ function ProjectGroup({
         }`}
       >
         <div className="px-3 pb-3 grid grid-cols-3 gap-2">
-          {ENVIRONMENTS.map((env) => (
-            <EnvCard
-              key={env.key}
-              env={env}
-              config={envConfigs[env.key] ?? defaultEnvConfig()}
-              status={statusMap[`${project.key}-${env.key}`] ?? "idle"}
-              isThisRunning={deployingKey === `${project.key}-${env.key}`}
-              isAnyRunning={isAnyRunning}
-              onUpdate={(field, value) => onUpdateEnv(env.key, field, value)}
-              onDeploy={() => onDeploy(env.key)}
-            />
-          ))}
+          {ENVIRONMENTS.map((env) => {
+            const compositeKey = `${project.key}-${env.key}`;
+            const isThisRunning = runningKeys.includes(compositeKey);
+            return (
+              <EnvCard
+                key={env.key}
+                env={env}
+                config={envConfigs[env.key] ?? defaultEnvConfig()}
+                status={statusMap[compositeKey] ?? "idle"}
+                isThisRunning={isThisRunning}
+                isDisabled={isThisRunning}
+                onUpdate={(field, value) => onUpdateEnv(env.key, field, value)}
+                onDeploy={() => onDeploy(env.key)}
+              />
+            );
+          })}
         </div>
       </div>
     </GlassCard>
@@ -500,7 +609,7 @@ function EnvCard({
   config,
   status,
   isThisRunning,
-  isAnyRunning,
+  isDisabled,
   onUpdate,
   onDeploy,
 }: {
@@ -508,7 +617,7 @@ function EnvCard({
   config: EnvConfig;
   status: DeployStatus;
   isThisRunning: boolean;
-  isAnyRunning: boolean;
+  isDisabled: boolean;
   onUpdate: (field: keyof EnvConfig, value: string) => void;
   onDeploy: () => void;
 }) {
@@ -521,23 +630,20 @@ function EnvCard({
 
   return (
     <div className={`${glassInner} p-3 flex flex-col gap-2`}>
-      {/* Header with gradient accent */}
       <div className={`flex items-center gap-1.5 mb-0.5`}>
         <span className={`size-2 rounded-full ${env.dot}`} />
         <span className="text-[12px] font-medium text-foreground/80">{env.label}</span>
       </div>
 
-      {/* Fields */}
       <MiniField label="Build" value={config.buildCommand} onChange={(v) => onUpdate("buildCommand", v)} placeholder="npm run build" />
       <MiniField label="Region" value={config.cosRegion} onChange={(v) => onUpdate("cosRegion", v)} placeholder="ap-beijing" />
       <MiniField label="Bucket" value={config.cosBucket} onChange={(v) => onUpdate("cosBucket", v)} placeholder="bucket-125xxx" />
       <MiniField label="域名" value={config.cdnDomain} onChange={(v) => onUpdate("cdnDomain", v)} placeholder="xxx.example.com" />
 
-      {/* Deploy Button */}
       <Button
         size="sm"
         onClick={onDeploy}
-        disabled={isAnyRunning}
+        disabled={isDisabled}
         className={`w-full mt-1 gap-1 text-[11px] h-7 rounded-lg transition-all ${
           isThisRunning
             ? "bg-amber-500/80 text-white"
