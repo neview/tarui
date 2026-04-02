@@ -14,7 +14,8 @@
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "http://111.231.18.118:5000/*" }
+        { "url": "http://111.231.18.118:5000/*" },
+        { "url": "https://cdn.tencentcloudapi.com/*" }
       ]
     }
   ]

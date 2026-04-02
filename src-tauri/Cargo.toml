@@ -26,4 +26,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "io-util", "process", "sync", "rt-multi-thread"] }
 lazy_static = "1.4"
+reqwest = { version = "0.12", features = ["rustls-tls", "json"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+chrono = "0.4"
 

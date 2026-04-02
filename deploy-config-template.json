@@ -1,0 +1,71 @@
+{
+  "global": {
+    "mangoDir": "C:/projects/mango-admin",
+    "agentDir": "C:/projects/agent-admin",
+    "orderDir": "C:/projects/order-admin",
+    "secretId": "your-tencent-cloud-secret-id",
+    "secretKey": "your-tencent-cloud-secret-key"
+  },
+  "projects": {
+    "mango": {
+      "prod": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "mango-prod-bucket-125xxx",
+        "cdnDomain": "admin.mgmovie.net"
+      },
+      "test": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "mango-test-bucket-125xxx",
+        "cdnDomain": "test-admin.mgmovie.net"
+      },
+      "backup": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "mango-backup-bucket-125xxx",
+        "cdnDomain": "backup-admin.mgmovie.net"
+      }
+    },
+    "agent": {
+      "prod": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "agent-prod-bucket-125xxx",
+        "cdnDomain": "agent.mgmovie.net"
+      },
+      "test": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "agent-test-bucket-125xxx",
+        "cdnDomain": "test-agent.mgmovie.net"
+      },
+      "backup": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "agent-backup-bucket-125xxx",
+        "cdnDomain": "backup-agent.mgmovie.net"
+      }
+    },
+    "order": {
+      "prod": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "order-prod-bucket-125xxx",
+        "cdnDomain": "order.mgmovie.net"
+      },
+      "test": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "order-test-bucket-125xxx",
+        "cdnDomain": "test-order.mgmovie.net"
+      },
+      "backup": {
+        "buildCommand": "npm run build",
+        "cosRegion": "ap-beijing",
+        "cosBucket": "order-backup-bucket-125xxx",
+        "cdnDomain": "backup-order.mgmovie.net"
+      }
+    }
+  }
+}
