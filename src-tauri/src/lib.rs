@@ -9,7 +9,7 @@ use std::os::windows::process::CommandExt;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, MutexGuard};
@@ -598,6 +598,21 @@ pub fn run() {
             run_build_and_deploy,
             read_text_file
         ])
+        .setup(|app| {
+            let window = app.get_webview_window("main").unwrap();
+            if let Some(monitor) = window.current_monitor().ok().flatten() {
+                let screen = monitor.size();
+                let scale = monitor.scale_factor();
+                let win_size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(1000, 700));
+                let x = ((screen.width as f64 - win_size.width as f64) / 2.0) as i32;
+                let y = (screen.height as f64 / scale - win_size.height as f64 / scale - 48.0) as i32;
+                let _ = window.set_position(PhysicalPosition::new(
+                    (x as f64 * scale) as i32,
+                    (y as f64 * scale) as i32,
+                ));
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
