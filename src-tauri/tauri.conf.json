@@ -34,6 +34,15 @@
     ],
     "resources": {
       "scripts/**/*": "scripts/"
+    },
+    "createUpdaterArtifacts": "v2Compatible"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/neview/tarui/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyMDUxOTE1RTNCMThDNkYKUldSdmpMSGpGUmtGRWc0NjBudW1KWEM2SnRrZEc2blVQV05IeEtxdjF0cVk4L3dtR3FPVks2ZUUK"
     }
   }
 }

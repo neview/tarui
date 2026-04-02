@@ -5,6 +5,7 @@ import "./globals.css";
 import NavBar from "./components/NavBar/navBar";
 import { LeftMenu } from "./components/LeftMenu/leftMenu";
 import ErrorBoundary from "./components/ErrorBoundary";
+import UpdateChecker from "./components/UpdateChecker";
 
 // 导入页面组件
 import Feiji from "./pages/Feiji";
@@ -16,6 +17,7 @@ import QQ from "./pages/QQ";
 function App() {
   return (
     <ErrorBoundary>
+      <UpdateChecker />
       <main>
         <NavBar />
         <div className="content_box">

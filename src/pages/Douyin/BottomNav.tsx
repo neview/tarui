@@ -1,6 +1,6 @@
-import { useState, useRef, useLayoutEffect, useCallback } from "react";
-import { motion } from "motion/react";
-import { Home, Bookmark, CirclePlus, UserRound, Settings } from "lucide-react";
+import { useState, useRef, useLayoutEffect, useCallback } from "react"
+import { motion } from "motion/react"
+import { Home, Bookmark, CirclePlus, UserRound, Settings } from "lucide-react"
 
 const navItems = [
   { icon: Home, label: "首页" },
@@ -8,47 +8,47 @@ const navItems = [
   { icon: CirclePlus, label: "发布" },
   { icon: UserRound, label: "我的" },
   { icon: Settings, label: "设置" },
-];
+]
 
 interface BottomNavProps {
-  active: number;
-  onChange: (index: number, iconCenterX: number) => void;
+  active: number
+  onChange: (index: number, iconCenterX: number) => void
 }
 
 export default function BottomNav({ active, onChange }: BottomNavProps) {
-  const navRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const [spotX, setSpotX] = useState<number | null>(null);
-  const isFirstRenderRef = useRef(true);
+  const navRef = useRef<HTMLDivElement>(null)
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
+  const [spotX, setSpotX] = useState<number | null>(null)
+  const isFirstRenderRef = useRef(true)
 
   const measure = useCallback(() => {
-    const btn = itemRefs.current[active];
-    const nav = navRef.current;
+    const btn = itemRefs.current[active]
+    const nav = navRef.current
     if (btn && nav) {
-      const btnRect = btn.getBoundingClientRect();
-      const navRect = nav.getBoundingClientRect();
-      setSpotX(btnRect.left - navRect.left + btnRect.width / 2);
+      const btnRect = btn.getBoundingClientRect()
+      const navRect = nav.getBoundingClientRect()
+      setSpotX(btnRect.left - navRect.left + btnRect.width / 2)
     }
-  }, [active]);
+  }, [active])
 
   useLayoutEffect(() => {
-    measure();
+    measure()
     if (isFirstRenderRef.current) {
       requestAnimationFrame(() => {
-        isFirstRenderRef.current = false;
-      });
+        isFirstRenderRef.current = false
+      })
     }
-  }, [measure]);
+  }, [measure])
 
   const handleClick = (index: number) => {
-    const btn = itemRefs.current[index];
+    const btn = itemRefs.current[index]
     if (btn) {
-      const rect = btn.getBoundingClientRect();
-      onChange(index, rect.left + rect.width / 2);
+      const rect = btn.getBoundingClientRect()
+      onChange(index, rect.left + rect.width / 2)
     } else {
-      onChange(index, window.innerWidth / 2);
+      onChange(index, window.innerWidth / 2)
     }
-  };
+  }
 
   return (
     <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-50">
@@ -57,8 +57,8 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
         className="relative flex items-center"
         style={{
           gap: 8,
-          padding: "10px 24px",
-          borderRadius: 28,
+          padding: "9px 24px",
+          borderRadius: 20,
           background: "rgba(15, 15, 15, 0.82)",
           backdropFilter: "blur(24px)",
           WebkitBackdropFilter: "blur(24px)",
@@ -67,6 +67,7 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
             "0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04)",
         }}
       >
+        {/* 聚光灯指示器 */}
         {spotX !== null && (
           <motion.div
             className="absolute top-0 pointer-events-none"
@@ -79,13 +80,14 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
             }
             style={{ width: 0, height: "100%" }}
           >
+            {/* 顶部发光横条 */}
             <div
               className="absolute -translate-x-1/2"
               style={{
                 top: -1,
                 left: 0,
-                width: 32,
-                height: 3,
+                width: 44,
+                height: 5,
                 borderRadius: 4,
                 background: "rgba(255,255,255,0.95)",
                 boxShadow:
@@ -93,43 +95,46 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
               }}
             />
 
+            {/* 梯形聚光灯光束 */}
             <div
               className="absolute -translate-x-1/2"
               style={{
                 top: 0,
                 left: 0,
-                width: 68,
-                height: "100%",
-                clipPath: "polygon(30% 0%, 70% 0%, 100% 100%, 0% 100%)",
+                width: 84,
+                height: "calc(100% + 16px)",
+                clipPath: "polygon(30% 0%, 70% 0%, 92% 100%, 8% 100%)",
                 background:
                   "linear-gradient(180deg, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.14) 50%, rgba(255,255,255,0.02) 100%)",
               }}
             />
 
+            {/* 底部椭圆光斑 */}
             <div
               className="absolute -translate-x-1/2"
               style={{
                 bottom: -6,
                 left: 0,
-                width: 40,
-                height: 40,
+                width: 80,
+                height: 28,
                 borderRadius: "50%",
                 background:
-                  "radial-gradient(circle, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.06) 50%, transparent 100%)",
-                filter: "blur(10px)",
+                  "radial-gradient(ellipse, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.12) 50%, transparent 100%)",
+                filter: "blur(6px)",
               }}
             />
           </motion.div>
         )}
 
+        {/* 导航按钮 */}
         {navItems.map((item, index) => {
-          const Icon = item.icon;
-          const isActive = active === index;
+          const Icon = item.icon
+          const isActive = active === index
           return (
             <motion.button
               key={item.label}
               ref={(el) => {
-                itemRefs.current[index] = el;
+                itemRefs.current[index] = el
               }}
               className="relative z-10 flex items-center justify-center cursor-pointer"
               style={{
@@ -140,7 +145,7 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
                 outline: "none",
                 WebkitTapHighlightColor: "transparent",
               }}
-              animate={{ scale: isActive ? 1.2 : 1 }}
+              animate={{ scale: isActive ? 1.1 : 1 }}
               transition={{ type: "spring", stiffness: 600, damping: 8, mass: 0.5 }}
               onClick={() => handleClick(index)}
             >
@@ -171,9 +176,9 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
                 />
               )}
             </motion.button>
-          );
+          )
         })}
       </nav>
     </div>
-  );
+  )
 }

@@ -59,6 +59,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: 'tauri-app v__VERSION__'
@@ -67,6 +69,9 @@ jobs:
             - **Windows**: 下载 `.exe` 或 `.msi` 文件
             - **macOS (Apple Silicon M1/M2/M3)**: 下载 `aarch64.dmg` 文件
             - **macOS (Intel)**: 下载 `x64.dmg` 文件
+
+            ## 自动更新
+            已安装旧版本的用户会自动收到更新提示。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
