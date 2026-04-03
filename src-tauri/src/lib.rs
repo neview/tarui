@@ -354,10 +354,18 @@ async fn run_shell_command(
     event_name: &str,
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
+    let needs_shell = matches!(program, "npm" | "npx" | "pnpm" | "yarn");
+
+    #[cfg(target_os = "windows")]
     let mut cmd = {
-        let mut c = Command::new("cmd");
-        c.arg("/C");
-        c.arg(program);
+        let mut c = if needs_shell {
+            let mut c = Command::new("cmd");
+            c.arg("/C");
+            c.arg(program);
+            c
+        } else {
+            Command::new(program)
+        };
         for arg in args {
             c.arg(arg);
         }
@@ -516,7 +524,10 @@ async fn run_build_and_deploy(app: AppHandle, params: DeployParams) -> Result<()
 
     let _ = app.emit(event, "[2/5] COS 上传完成 ✓");
 
-    if let Some(domain) = params.cdn_domain.as_deref().filter(|d| !d.is_empty()) {
+    if let Some(domain) = params.cdn_domain.as_deref()
+        .map(|d| d.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'))
+        .filter(|d| !d.is_empty())
+    {
         // ===== Step 3: Purge URL Cache =====
         let _ = app.emit(event, "[3/5] 正在刷新 URL 缓存...");
 
