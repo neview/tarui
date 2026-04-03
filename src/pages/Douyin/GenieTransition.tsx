@@ -27,7 +27,7 @@ export default function GenieTransition({
   }, [state])
 
   if (state === "idle") {
-    return <div className="h-full w-full">{children}</div>
+    return <div className="h-full w-full bg-transparent">{children}</div>
   }
 
   const isExit = state === "exiting"

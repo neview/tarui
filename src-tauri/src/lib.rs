@@ -598,6 +598,227 @@ async fn read_text_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("读取文件失败: {} ({})", path, e))
 }
 
+// ==================== SSH 远程命令执行 ====================
+
+#[derive(serde::Deserialize)]
+struct SshServer {
+    host: String,
+    port: u16,
+    username: String,
+    auth_type: String,
+    password: Option<String>,
+    private_key_path: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct SshResult {
+    host: String,
+    name: String,
+    success: bool,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct SshProgress {
+    host: String,
+    status: String,
+    message: String,
+}
+
+fn run_ssh_single(server: &SshServer, command: &str) -> SshResult {
+    let addr = format!("{}:{}", server.host, server.port);
+    let tcp = match std::net::TcpStream::connect_timeout(
+        &addr.parse().unwrap_or_else(|_| {
+            format!("{}:{}", server.host, server.port)
+                .parse()
+                .unwrap()
+        }),
+        std::time::Duration::from_secs(10),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return SshResult {
+                host: server.host.clone(),
+                name: String::new(),
+                success: false,
+                stdout: String::new(),
+                stderr: format!("连接失败: {}", e),
+                exit_code: None,
+            };
+        }
+    };
+
+    let mut sess = match ssh2::Session::new() {
+        Ok(s) => s,
+        Err(e) => {
+            return SshResult {
+                host: server.host.clone(),
+                name: String::new(),
+                success: false,
+                stdout: String::new(),
+                stderr: format!("创建 SSH 会话失败: {}", e),
+                exit_code: None,
+            };
+        }
+    };
+
+    sess.set_tcp_stream(tcp);
+    if let Err(e) = sess.handshake() {
+        return SshResult {
+            host: server.host.clone(),
+            name: String::new(),
+            success: false,
+            stdout: String::new(),
+            stderr: format!("SSH 握手失败: {}", e),
+            exit_code: None,
+        };
+    }
+
+    let auth_result = if server.auth_type == "key" {
+        if let Some(key_path) = &server.private_key_path {
+            sess.userauth_pubkey_file(
+                &server.username,
+                None,
+                std::path::Path::new(key_path),
+                server.password.as_deref(),
+            )
+        } else {
+            Err(ssh2::Error::from_errno(ssh2::ErrorCode::Session(-1)))
+        }
+    } else {
+        sess.userauth_password(
+            &server.username,
+            server.password.as_deref().unwrap_or(""),
+        )
+    };
+
+    if let Err(e) = auth_result {
+        return SshResult {
+            host: server.host.clone(),
+            name: String::new(),
+            success: false,
+            stdout: String::new(),
+            stderr: format!("认证失败: {}", e),
+            exit_code: None,
+        };
+    }
+
+    let mut channel = match sess.channel_session() {
+        Ok(c) => c,
+        Err(e) => {
+            return SshResult {
+                host: server.host.clone(),
+                name: String::new(),
+                success: false,
+                stdout: String::new(),
+                stderr: format!("创建通道失败: {}", e),
+                exit_code: None,
+            };
+        }
+    };
+
+    if let Err(e) = channel.exec(command) {
+        return SshResult {
+            host: server.host.clone(),
+            name: String::new(),
+            success: false,
+            stdout: String::new(),
+            stderr: format!("执行命令失败: {}", e),
+            exit_code: None,
+        };
+    }
+
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+
+    use std::io::Read;
+    let _ = channel.read_to_string(&mut stdout_buf);
+    let _ = channel.stderr().read_to_string(&mut stderr_buf);
+
+    let _ = channel.wait_close();
+    let exit_code = channel.exit_status().ok();
+    let success = exit_code == Some(0);
+
+    SshResult {
+        host: server.host.clone(),
+        name: String::new(),
+        success,
+        stdout: stdout_buf,
+        stderr: stderr_buf,
+        exit_code,
+    }
+}
+
+#[tauri::command]
+async fn execute_ssh_commands(
+    app: AppHandle,
+    servers: Vec<SshServer>,
+    command: String,
+    session_id: String,
+) -> Result<Vec<SshResult>, String> {
+    let event_name = format!("ssh-progress-{}", session_id);
+    let mut results = Vec::new();
+
+    for server in &servers {
+        let _ = app.emit(
+            event_name.as_str(),
+            SshProgress {
+                host: server.host.clone(),
+                status: "connecting".to_string(),
+                message: format!("正在连接 {}...", server.host),
+            },
+        );
+
+        let result = {
+            let s = SshServer {
+                host: server.host.clone(),
+                port: server.port,
+                username: server.username.clone(),
+                auth_type: server.auth_type.clone(),
+                password: server.password.clone(),
+                private_key_path: server.private_key_path.clone(),
+            };
+            let cmd = command.clone();
+            tokio::task::spawn_blocking(move || run_ssh_single(&s, &cmd))
+                .await
+                .map_err(|e| format!("任务执行失败: {}", e))?
+        };
+
+        let status = if result.success { "success" } else { "error" };
+        let _ = app.emit(
+            event_name.as_str(),
+            SshProgress {
+                host: server.host.clone(),
+                status: status.to_string(),
+                message: if result.success {
+                    "执行完成".to_string()
+                } else {
+                    result.stderr.clone()
+                },
+            },
+        );
+
+        results.push(result);
+    }
+
+    Ok(results)
+}
+
+#[tauri::command]
+async fn test_ssh_connection(server: SshServer) -> Result<String, String> {
+    let result = tokio::task::spawn_blocking(move || run_ssh_single(&server, "echo ok"))
+        .await
+        .map_err(|e| format!("测试失败: {}", e))?;
+
+    if result.success {
+        Ok("连接成功".to_string())
+    } else {
+        Err(result.stderr)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -611,7 +832,9 @@ pub fn run() {
             kill_python_script,
             capture_qr_code,
             run_build_and_deploy,
-            read_text_file
+            read_text_file,
+            execute_ssh_commands,
+            test_ssh_connection
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

@@ -51,6 +51,20 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
   }
 
   return (
+    <>
+      {/* Bottom gradient backdrop */}
+      <div
+        className="absolute bottom-0 left-0 right-0 z-40 pointer-events-none"
+        style={{
+          height: 100,
+          background: "linear-gradient(to top, rgba(5,5,16,0.85) 0%, rgba(5,5,16,0.5) 40%, rgba(5,5,16,0) 100%)",
+          backdropFilter: "blur(12px) saturate(1.2)",
+          WebkitBackdropFilter: "blur(12px) saturate(1.2)",
+          maskImage: "linear-gradient(to top, black 0%, black 50%, transparent 100%)",
+          WebkitMaskImage: "linear-gradient(to top, black 0%, black 50%, transparent 100%)",
+        }}
+      />
+
     <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-50">
       <nav
         ref={navRef}
@@ -59,12 +73,12 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
           gap: 8,
           padding: "9px 24px",
           borderRadius: 20,
-          background: "rgba(15, 15, 15, 0.82)",
-          backdropFilter: "blur(24px)",
-          WebkitBackdropFilter: "blur(24px)",
-          border: "1px solid rgba(255,255,255,0.07)",
+          background: "rgba(10, 10, 20, 0.45)",
+          backdropFilter: "blur(30px) saturate(1.3)",
+          WebkitBackdropFilter: "blur(30px) saturate(1.3)",
+          border: "1px solid rgba(255,255,255,0.08)",
           boxShadow:
-            "0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04)",
+            "0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)",
         }}
       >
         {/* 聚光灯指示器 */}
@@ -180,5 +194,6 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
         })}
       </nav>
     </div>
+    </>
   )
 }

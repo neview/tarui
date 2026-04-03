@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react"
 import BottomNav from "./BottomNav"
 import GenieTransition from "./GenieTransition"
+import SplashCursor from "./SplashCursor"
 import {
   HomePage,
   BookmarkPage,
@@ -48,8 +49,10 @@ export default function Douyin() {
   const Panel = panels[displayPanel]
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-black">
-      <div ref={contentRef} className="absolute inset-0">
+    <div className="relative h-full w-full overflow-hidden bg-[#050510]">
+      <SplashCursor />
+
+      <div ref={contentRef} className="absolute inset-0 z-10">
         <GenieTransition
           state={animState}
           sinkXPercent={sinkX}

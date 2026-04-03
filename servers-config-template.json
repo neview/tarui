@@ -1,0 +1,10 @@
+[
+  {
+    "name": "生产服务器-Web",
+    "host": "124.221.35.247",
+    "port": 9982,
+    "username": "root",
+    "authType": "password",
+    "password": "Mango123#@!"
+  }
+]
