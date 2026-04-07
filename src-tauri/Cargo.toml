@@ -34,4 +34,5 @@ sha2 = "0.10"
 hex = "0.4"
 chrono = "0.4"
 ssh2 = "0.9"
+openssl = { version = "0.10", features = ["vendored"] }
 
