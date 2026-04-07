@@ -219,10 +219,9 @@ function ServerCard({
 
   return (
     <motion.div
-      layout
       initial={{ opacity: 0, y: 30, scale: 0.85 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.8, y: -20, filter: "blur(8px)" }}
+      exit={{ opacity: 0, scale: 0.95, filter: "blur(4px)" }}
       transition={{
         type: "spring",
         stiffness: 350,
@@ -1339,47 +1338,45 @@ export default function ServerHome() {
             </div>
           </div>
 
-          <AnimatePresence initial={false}>
-            {!serversCollapsed && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ type: "spring", stiffness: 350, damping: 30 }}
-                style={{ overflow: "hidden" }}
-              >
-                {servers.length === 0 ? (
-                  <EmptyState
-                    onAdd={() => {
-                      setEditingServer(null);
-                      setDialogOpen(true);
-                    }}
-                  />
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 pt-2 pl-1 pr-1">
-                    <AnimatePresence mode="popLayout">
-                      {servers.map((server, i) => (
-                        <ServerCard
-                          key={server.id}
-                          server={server}
-                          color={getColor(i)}
-                          selected={selectedIds.has(server.id)}
-                          index={i}
-                          pendingDelete={pendingDeleteId === server.id}
-                          onToggle={() => toggleSelect(server.id)}
-                          onEdit={() => {
-                            setEditingServer(server);
-                            setDialogOpen(true);
-                          }}
-                          onDelete={() => handleDelete(server.id)}
-                        />
-                      ))}
-                    </AnimatePresence>
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
+          <div
+            className="transition-[grid-template-rows] duration-[400ms] ease-in-out"
+            style={{
+              display: "grid",
+              gridTemplateRows: serversCollapsed ? "0fr" : "1fr",
+            }}
+          >
+            <div style={{ overflow: "hidden" }}>
+              {servers.length === 0 ? (
+                <EmptyState
+                  onAdd={() => {
+                    setEditingServer(null);
+                    setDialogOpen(true);
+                  }}
+                />
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 pt-2 pl-1 pr-1 pb-1">
+                  <AnimatePresence mode="popLayout">
+                    {servers.map((server, i) => (
+                      <ServerCard
+                        key={server.id}
+                        server={server}
+                        color={getColor(i)}
+                        selected={selectedIds.has(server.id)}
+                        index={i}
+                        pendingDelete={pendingDeleteId === server.id}
+                        onToggle={() => toggleSelect(server.id)}
+                        onEdit={() => {
+                          setEditingServer(server);
+                          setDialogOpen(true);
+                        }}
+                        onDelete={() => handleDelete(server.id)}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* ===== Command Section ===== */}
