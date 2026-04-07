@@ -23,8 +23,8 @@ export default function UpdateChecker() {
           setUpdate(result)
           setStage("available")
         }
-      } catch {
-        // silently ignore check errors on startup
+      } catch (e) {
+        console.warn("[UpdateChecker] 检查更新失败:", e)
       }
     }
     const timer = setTimeout(doCheck, 3000)

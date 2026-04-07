@@ -1,6 +1,7 @@
 import { useState, useRef, useLayoutEffect, useCallback } from "react"
 import { motion } from "motion/react"
 import { Home, Bookmark, CirclePlus, UserRound, Settings } from "lucide-react"
+import { useTheme } from "next-themes"
 
 const navItems = [
   { icon: Home, label: "首页" },
@@ -20,6 +21,8 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
   const [spotX, setSpotX] = useState<number | null>(null)
   const isFirstRenderRef = useRef(true)
+  const { resolvedTheme } = useTheme()
+  const isDark = resolvedTheme === "dark"
 
   const measure = useCallback(() => {
     const btn = itemRefs.current[active]
@@ -57,7 +60,9 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
         className="absolute bottom-0 left-0 right-0 z-40 pointer-events-none"
         style={{
           height: 100,
-          background: "linear-gradient(to top, rgba(5,5,16,0.85) 0%, rgba(5,5,16,0.5) 40%, rgba(5,5,16,0) 100%)",
+          background: isDark
+            ? "linear-gradient(to top, rgba(5,5,16,0.85) 0%, rgba(5,5,16,0.5) 40%, rgba(5,5,16,0) 100%)"
+            : "linear-gradient(to top, rgba(249,250,251,0.9) 0%, rgba(249,250,251,0.5) 40%, rgba(249,250,251,0) 100%)",
           backdropFilter: "blur(12px) saturate(1.2)",
           WebkitBackdropFilter: "blur(12px) saturate(1.2)",
           maskImage: "linear-gradient(to top, black 0%, black 50%, transparent 100%)",
@@ -73,12 +78,17 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
           gap: 8,
           padding: "9px 24px",
           borderRadius: 20,
-          background: "rgba(10, 10, 20, 0.45)",
+          background: isDark
+            ? "rgba(10, 10, 20, 0.45)"
+            : "rgba(255, 255, 255, 0.65)",
           backdropFilter: "blur(30px) saturate(1.3)",
           WebkitBackdropFilter: "blur(30px) saturate(1.3)",
-          border: "1px solid rgba(255,255,255,0.08)",
-          boxShadow:
-            "0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)",
+          border: isDark
+            ? "1px solid rgba(255,255,255,0.08)"
+            : "1px solid rgba(0,0,0,0.08)",
+          boxShadow: isDark
+            ? "0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)"
+            : "0 8px 32px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.8)",
         }}
       >
         {/* 聚光灯指示器 */}
@@ -103,9 +113,10 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
                 width: 44,
                 height: 5,
                 borderRadius: 4,
-                background: "rgba(255,255,255,0.95)",
-                boxShadow:
-                  "0 0 12px 4px rgba(255,255,255,0.4), 0 0 4px 1px rgba(255,255,255,0.7)",
+                background: isDark ? "rgba(255,255,255,0.95)" : "rgba(124,58,237,0.85)",
+                boxShadow: isDark
+                  ? "0 0 12px 4px rgba(255,255,255,0.4), 0 0 4px 1px rgba(255,255,255,0.7)"
+                  : "0 0 12px 4px rgba(124,58,237,0.25), 0 0 4px 1px rgba(124,58,237,0.4)",
               }}
             />
 
@@ -118,8 +129,9 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
                 width: 84,
                 height: "calc(100% + 16px)",
                 clipPath: "polygon(30% 0%, 70% 0%, 92% 100%, 8% 100%)",
-                background:
-                  "linear-gradient(180deg, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.14) 50%, rgba(255,255,255,0.02) 100%)",
+                background: isDark
+                  ? "linear-gradient(180deg, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.14) 50%, rgba(255,255,255,0.02) 100%)"
+                  : "linear-gradient(180deg, rgba(124,58,237,0.2) 0%, rgba(124,58,237,0.08) 50%, rgba(124,58,237,0.01) 100%)",
               }}
             />
 
@@ -132,8 +144,9 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
                 width: 80,
                 height: 28,
                 borderRadius: "50%",
-                background:
-                  "radial-gradient(ellipse, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.12) 50%, transparent 100%)",
+                background: isDark
+                  ? "radial-gradient(ellipse, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0.12) 50%, transparent 100%)"
+                  : "radial-gradient(ellipse, rgba(124,58,237,0.2) 0%, rgba(124,58,237,0.06) 50%, transparent 100%)",
                 filter: "blur(6px)",
               }}
             />
@@ -167,9 +180,13 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
                 size={22}
                 strokeWidth={isActive ? 2 : 1.5}
                 style={{
-                  color: isActive ? "#ffffff" : "rgba(255,255,255,0.3)",
+                  color: isDark
+                    ? (isActive ? "#ffffff" : "rgba(255,255,255,0.3)")
+                    : (isActive ? "#7c3aed" : "rgba(0,0,0,0.3)"),
                   filter: isActive
-                    ? "drop-shadow(0 0 6px rgba(255,255,255,0.35))"
+                    ? isDark
+                      ? "drop-shadow(0 0 6px rgba(255,255,255,0.35))"
+                      : "drop-shadow(0 0 6px rgba(124,58,237,0.3))"
                     : "none",
                   transition: "color 0.3s ease, filter 0.3s ease, stroke-width 0.3s ease",
                 }}
@@ -182,7 +199,7 @@ export default function BottomNav({ active, onChange }: BottomNavProps) {
                     width: 22,
                     height: 8,
                     borderRadius: "50%",
-                    background: "rgba(255,255,255,0.45)",
+                    background: isDark ? "rgba(255,255,255,0.45)" : "rgba(124,58,237,0.3)",
                     filter: "blur(5px)",
                     transform: "translateX(-50%) perspective(40px) rotateX(30deg)",
                     left: "50%",

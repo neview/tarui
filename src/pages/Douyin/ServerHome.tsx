@@ -118,7 +118,7 @@ function SectionHeader({
     >
       <div className="flex items-center gap-2.5">
         <motion.div
-          className="w-8 h-8 rounded-xl bg-white/[0.06] border border-white/[0.08] flex items-center justify-center"
+          className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] flex items-center justify-center"
           animate={{
             boxShadow: hovered
               ? "0 0 20px rgba(167,139,250,0.2), inset 0 0 8px rgba(167,139,250,0.1)"
@@ -130,17 +130,17 @@ function SectionHeader({
             animate={{ rotate: hovered ? 12 : 0 }}
             transition={{ type: "spring", stiffness: 400, damping: 15 }}
           >
-            <Icon size={16} className="text-white/80" />
+            <Icon size={16} className="text-gray-700 dark:text-white/80" />
           </motion.div>
         </motion.div>
-        <span className="text-white/90 text-sm font-semibold">{title}</span>
+        <span className="text-gray-800 dark:text-white/90 text-sm font-semibold">{title}</span>
         {count !== undefined && count > 0 && (
           <motion.span
             key={count}
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ type: "spring", stiffness: 500, damping: 20 }}
-            className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-violet-500/20 text-violet-300 border border-violet-500/20"
+            className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-violet-500/20 text-violet-600 dark:text-violet-300 border border-violet-500/20"
           >
             {count}
           </motion.span>
@@ -179,7 +179,7 @@ function ClickToCopy({ value, children }: { value: string; children: ReactNode }
             initial={{ opacity: 0, y: 4, scale: 0.8 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.8 }}
-            className="text-[10px] text-emerald-400 font-medium whitespace-nowrap"
+            className="text-[10px] text-emerald-500 dark:text-emerald-400 font-medium whitespace-nowrap"
           >
             已复制
           </motion.span>
@@ -238,10 +238,10 @@ function ServerCard({
       <div
         className={`
           relative p-3 rounded-xl overflow-hidden
-          backdrop-blur-2xl bg-white/[0.07] border
-          shadow-[0_2px_16px_rgba(0,0,0,0.15)]
+          backdrop-blur-2xl bg-white/80 dark:bg-white/[0.07] border
+          shadow-[0_2px_16px_rgba(0,0,0,0.06)] dark:shadow-[0_2px_16px_rgba(0,0,0,0.15)]
           transition-all duration-300
-          ${selected ? "border-white/25 shadow-[0_2px_20px_rgba(139,92,246,0.2)]" : "border-white/[0.10]"}
+          ${selected ? "border-violet-300 dark:border-white/25 shadow-[0_2px_20px_rgba(139,92,246,0.15)] dark:shadow-[0_2px_20px_rgba(139,92,246,0.2)]" : "border-black/[0.08] dark:border-white/[0.10]"}
         `}
       >
         <motion.div
@@ -257,7 +257,7 @@ function ServerCard({
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0, opacity: 0 }}
               transition={{ type: "spring", stiffness: 500, damping: 25 }}
-              className="absolute top-2 left-2 w-4.5 h-4.5 rounded-full bg-violet-500 flex items-center justify-center z-20 shadow-[0_0_10px_rgba(139,92,246,0.5)]"
+              className="absolute top-2 left-2 w-4.5 h-4.5 rounded-full bg-violet-500 flex items-center justify-center z-20 shadow-[0_0_10px_rgba(139,92,246,0.3)] dark:shadow-[0_0_10px_rgba(139,92,246,0.5)]"
             >
               <Check size={10} className="text-white" strokeWidth={3} />
             </motion.div>
@@ -279,25 +279,25 @@ function ServerCard({
         <div className="relative z-10">
           <div className="flex items-center gap-2.5 mb-2">
             <motion.div
-              className="w-8 h-8 rounded-lg bg-white/[0.10] border border-white/[0.10] flex items-center justify-center shrink-0"
+              className="w-8 h-8 rounded-lg bg-black/[0.04] dark:bg-white/[0.10] border border-black/[0.06] dark:border-white/[0.10] flex items-center justify-center shrink-0"
               animate={{ rotate: isHovered ? 6 : 0 }}
               transition={{ type: "spring", stiffness: 400, damping: 15 }}
             >
-              <Server size={15} className="text-white/80" />
+              <Server size={15} className="text-gray-600 dark:text-white/80" />
             </motion.div>
             <div className="min-w-0">
-              <div className="text-white font-medium text-[13px] truncate leading-tight">{server.name}</div>
-              <div className="text-white/45 text-[10px] leading-tight mt-0.5">{server.username}</div>
+              <div className="text-gray-800 dark:text-white font-medium text-[13px] truncate leading-tight">{server.name}</div>
+              <div className="text-gray-400 dark:text-white/45 text-[10px] leading-tight mt-0.5">{server.username}</div>
             </div>
           </div>
 
           <ClickToCopy value={`${server.host}:${server.port}`}>
-            <span className="text-white/55 text-[11px] font-mono inline-block hover:text-white/90 transition-colors">
+            <span className="text-gray-500 dark:text-white/55 text-[11px] font-mono inline-block hover:text-gray-800 dark:hover:text-white/90 transition-colors">
               {server.host}:{server.port}
             </span>
           </ClickToCopy>
 
-          <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/[0.06]">
+          <div className="flex items-center justify-between mt-2 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
             <motion.span
               className="text-[10px] font-medium"
               animate={{
@@ -313,16 +313,16 @@ function ServerCard({
               animate={{ opacity: isHovered ? 1 : 0, x: isHovered ? 0 : 6 }}
               transition={{ duration: 0.2 }}
             >
-              <motion.button
+                <motion.button
                 whileHover={{ scale: 1.15 }}
                 whileTap={{ scale: 0.9 }}
                 onClick={(e) => {
                   e.stopPropagation();
                   onEdit();
                 }}
-                className="p-1 rounded-md hover:bg-white/10 transition-colors"
+                className="p-1 rounded-md hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
               >
-                <Pencil size={12} className="text-white/60" />
+                <Pencil size={12} className="text-gray-400 dark:text-white/60" />
               </motion.button>
               <motion.button
                 whileHover={{ scale: 1.15 }}
@@ -331,7 +331,7 @@ function ServerCard({
                   e.stopPropagation();
                   onDelete();
                 }}
-                className="p-1 rounded-md hover:bg-red-500/20 transition-colors"
+                className="p-1 rounded-md hover:bg-red-500/10 dark:hover:bg-red-500/20 transition-colors"
                 animate={
                   pendingDelete
                     ? {
@@ -345,7 +345,7 @@ function ServerCard({
                 {pendingDelete ? (
                   <span className="text-[10px] text-red-400 font-medium whitespace-nowrap">确认?</span>
                 ) : (
-                  <Trash2 size={12} className="text-white/60" />
+                  <Trash2 size={12} className="text-gray-400 dark:text-white/60" />
                 )}
               </motion.button>
             </motion.div>
@@ -376,7 +376,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       className="flex flex-col items-center justify-center py-12"
     >
       <motion.div
-        className="w-20 h-20 rounded-3xl bg-gradient-to-br from-violet-500/15 to-indigo-500/10 border border-white/[0.06] flex items-center justify-center mb-5 shadow-[0_0_40px_rgba(139,92,246,0.08)]"
+        className="w-20 h-20 rounded-3xl bg-gradient-to-br from-violet-500/15 to-indigo-500/10 border border-black/[0.04] dark:border-white/[0.06] flex items-center justify-center mb-5 shadow-[0_0_40px_rgba(139,92,246,0.08)]"
         animate={{ y: [-4, 4, -4] }}
         transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
       >
@@ -384,16 +384,16 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
           animate={{ rotate: [0, 5, -5, 0] }}
           transition={{ duration: 6, repeat: Infinity }}
         >
-          <ServerCrash size={32} className="text-white/40" />
+          <ServerCrash size={32} className="text-gray-400 dark:text-white/40" />
         </motion.div>
       </motion.div>
-      <p className="text-white/60 text-sm font-medium mb-1">还没有服务器</p>
-      <p className="text-white/35 text-xs mb-5">添加你的第一台服务器开始管理</p>
+      <p className="text-gray-600 dark:text-white/60 text-sm font-medium mb-1">还没有服务器</p>
+      <p className="text-gray-400 dark:text-white/35 text-xs mb-5">添加你的第一台服务器开始管理</p>
       <motion.button
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         onClick={onAdd}
-        className="relative px-5 py-2 rounded-xl text-sm font-medium text-white/90 bg-violet-500/20 border border-violet-500/30 overflow-hidden"
+        className="relative px-5 py-2 rounded-xl text-sm font-medium text-violet-700 dark:text-white/90 bg-violet-500/15 dark:bg-violet-500/20 border border-violet-500/30 overflow-hidden"
       >
         <motion.div
           className="absolute inset-0 rounded-xl border border-violet-400/30 pointer-events-none"
@@ -448,10 +448,10 @@ function CommandInput({
         onBlur={() => setFocused(false)}
         disabled={disabled}
         placeholder="输入要执行的命令，多条命令用 && 连接，如:&#10;cd /home/wwwroot/project && pwd && ls -la"
-        className="w-full rounded-xl bg-black/40 border border-white/[0.10] px-4 pl-5 py-3 text-white/90 text-sm font-mono placeholder:text-white/25 transition-all duration-300 resize-none outline-none disabled:opacity-40"
+        className="w-full rounded-xl bg-gray-50 dark:bg-black/40 border border-black/[0.08] dark:border-white/[0.10] px-4 pl-5 py-3 text-gray-800 dark:text-white/90 text-sm font-mono placeholder:text-gray-400 dark:placeholder:text-white/25 transition-all duration-300 resize-none outline-none disabled:opacity-40"
       />
       <motion.div
-        className="absolute bottom-2 right-3 text-[10px] text-white/35"
+        className="absolute bottom-2 right-3 text-[10px] text-gray-400 dark:text-white/35"
         animate={{ opacity: value.length > 0 ? 1 : 0 }}
       >
         {value.split("\n").length} 行 · {value.length} 字符
@@ -485,7 +485,7 @@ function SelectAllCheckbox({
             ? "bg-violet-500 border-violet-400"
             : partial
               ? "bg-violet-500/40 border-violet-400/60"
-              : "bg-white/[0.04] border-white/[0.12]"
+              : "bg-black/[0.03] dark:bg-white/[0.04] border-black/[0.10] dark:border-white/[0.12]"
         }`}
         whileTap={{ scale: 0.8, rotate: 8 }}
         transition={{ type: "spring", stiffness: 500, damping: 20 }}
@@ -512,13 +512,13 @@ function SelectAllCheckbox({
           )}
         </AnimatePresence>
       </motion.div>
-      <span className="text-white/60 text-xs">
+      <span className="text-gray-500 dark:text-white/60 text-xs">
         全选
         <motion.span
           key={selected}
           initial={{ y: -8, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          className="text-white/80 ml-1"
+          className="text-gray-700 dark:text-white/80 ml-1"
         >
           ({selected}/{total})
         </motion.span>
@@ -546,10 +546,10 @@ function ExecuteButton({
       onClick={onExecute}
       className={`relative px-6 py-2.5 rounded-xl text-sm font-medium overflow-hidden transition-all duration-300 ${
         executing
-          ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+          ? "bg-amber-500/15 dark:bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/30"
           : canExecute
             ? "text-white border-0"
-            : "bg-white/[0.04] text-white/30 border border-white/[0.08] cursor-not-allowed"
+            : "bg-black/[0.03] dark:bg-white/[0.04] text-gray-400 dark:text-white/30 border border-black/[0.06] dark:border-white/[0.08] cursor-not-allowed"
       }`}
     >
       {canExecute && !executing && (
@@ -636,18 +636,18 @@ function ResultCard({
       className={`rounded-xl border ${cfg.border} ${cfg.bg} overflow-hidden`}
     >
       <motion.div
-        className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-white/[0.02] transition-colors"
+        className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
         onClick={() => setExpanded(!expanded)}
         whileTap={{ scale: 0.99 }}
       >
         {cfg.icon}
-        <span className="text-white/90 text-xs font-medium flex-1 truncate">
+        <span className="text-gray-800 dark:text-white/90 text-xs font-medium flex-1 truncate">
           {result.name || result.host}
         </span>
-        <span className="text-white/45 text-[10px] font-mono mr-2">{result.host}</span>
+        <span className="text-gray-400 dark:text-white/45 text-[10px] font-mono mr-2">{result.host}</span>
         <span className={`text-[10px] font-medium ${cfg.labelColor}`}>{cfg.label}</span>
         <motion.div animate={{ rotate: expanded ? 180 : 0 }}>
-          <ChevronDown size={12} className="text-white/35" />
+          <ChevronDown size={12} className="text-gray-400 dark:text-white/35" />
         </motion.div>
       </motion.div>
 
@@ -659,7 +659,7 @@ function ResultCard({
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.25, ease: "easeInOut" }}
           >
-            <pre className="px-3 pb-3 pt-2 text-xs font-mono text-white/60 whitespace-pre-wrap max-h-40 overflow-y-auto border-t border-white/[0.06]">
+            <pre className="px-3 pb-3 pt-2 text-xs font-mono text-gray-600 dark:text-white/60 whitespace-pre-wrap max-h-40 overflow-y-auto border-t border-black/[0.04] dark:border-white/[0.06]">
               {output}
               {result.status === "running" && (
                 <motion.span
@@ -690,9 +690,9 @@ function ResultCard({
 function ToastContainer({ toasts }: { toasts: ToastData[] }) {
   const colors: Record<string, string> = {
     success:
-      "from-emerald-500/20 to-emerald-600/10 border-emerald-500/30 text-emerald-300",
-    error: "from-red-500/20 to-red-600/10 border-red-500/30 text-red-300",
-    info: "from-violet-500/20 to-violet-600/10 border-violet-500/30 text-violet-300",
+      "from-emerald-500/15 to-emerald-600/5 dark:from-emerald-500/20 dark:to-emerald-600/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-300",
+    error: "from-red-500/15 to-red-600/5 dark:from-red-500/20 dark:to-red-600/10 border-red-500/30 text-red-600 dark:text-red-300",
+    info: "from-violet-500/15 to-violet-600/5 dark:from-violet-500/20 dark:to-violet-600/10 border-violet-500/30 text-violet-600 dark:text-violet-300",
   };
 
   return (
@@ -704,7 +704,7 @@ function ToastContainer({ toasts }: { toasts: ToastData[] }) {
             initial={{ opacity: 0, y: 20, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.9 }}
-            className={`px-4 py-2.5 rounded-xl backdrop-blur-2xl bg-gradient-to-r border text-sm shadow-[0_8px_32px_rgba(0,0,0,0.3)] ${colors[t.type]}`}
+            className={`px-4 py-2.5 rounded-xl backdrop-blur-2xl bg-gradient-to-r border text-sm shadow-[0_8px_32px_rgba(0,0,0,0.1)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)] ${colors[t.type]}`}
           >
             {t.message}
           </motion.div>
@@ -807,7 +807,7 @@ function ServerFormDialog({
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="pointer-events-auto w-full max-w-md mx-4 rounded-2xl bg-[#111827]/95 backdrop-blur-3xl border border-white/[0.10] shadow-[0_24px_80px_rgba(0,0,0,0.6)] p-5"
+              className="pointer-events-auto w-full max-w-md mx-4 rounded-2xl bg-white/95 dark:bg-[#111827]/95 backdrop-blur-3xl border border-black/[0.08] dark:border-white/[0.10] shadow-[0_24px_80px_rgba(0,0,0,0.15)] dark:shadow-[0_24px_80px_rgba(0,0,0,0.6)] p-5"
               initial={{ opacity: 0, scale: 0.9, y: 30 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.92, y: 20 }}
@@ -817,16 +817,16 @@ function ServerFormDialog({
               {/* Header */}
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h2 className="text-base font-semibold text-white/90">
+                  <h2 className="text-base font-semibold text-gray-800 dark:text-white/90">
                     {editServer ? "编辑服务器" : "添加服务器"}
                   </h2>
-                  <p className="text-xs text-white/50 mt-0.5">填写 SSH 连接信息</p>
+                  <p className="text-xs text-gray-500 dark:text-white/50 mt-0.5">填写 SSH 连接信息</p>
                 </div>
                 <motion.button
                   whileHover={{ scale: 1.1, rotate: 90 }}
                   whileTap={{ scale: 0.9 }}
                   onClick={onClose}
-                  className="w-7 h-7 rounded-lg bg-white/[0.06] border border-white/[0.08] flex items-center justify-center text-white/40 hover:text-white/70 hover:bg-white/[0.10] transition-colors"
+                  className="w-7 h-7 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] flex items-center justify-center text-gray-400 dark:text-white/40 hover:text-gray-600 dark:hover:text-white/70 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] transition-colors"
                 >
                   <XCircle size={14} />
                 </motion.button>
@@ -834,55 +834,55 @@ function ServerFormDialog({
 
               {/* Form */}
               <div className="space-y-4">
-                <div className="rounded-xl bg-white/[0.04] border border-white/[0.06] p-3 space-y-3">
+                <div className="rounded-xl bg-gray-50 dark:bg-white/[0.04] border border-black/[0.04] dark:border-white/[0.06] p-3 space-y-3">
                   <div className="flex gap-3">
                     <div className="flex-1">
-                      <Label className="text-white/60 text-xs mb-1 block">名称</Label>
+                      <Label className="text-gray-500 dark:text-white/60 text-xs mb-1 block">名称</Label>
                       <Input
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         placeholder="prod-web"
-                        className="bg-white/[0.07] border-white/[0.10] text-white/90 placeholder:text-white/30"
+                        className="bg-white dark:bg-white/[0.07] border-black/[0.08] dark:border-white/[0.10] text-gray-800 dark:text-white/90 placeholder:text-gray-400 dark:placeholder:text-white/30"
                       />
                     </div>
                     <div className="w-20">
-                      <Label className="text-white/60 text-xs mb-1 block">端口</Label>
+                      <Label className="text-gray-500 dark:text-white/60 text-xs mb-1 block">端口</Label>
                       <Input
                         value={port}
                         onChange={(e) => setPort(e.target.value)}
                         placeholder="22"
-                        className="bg-white/[0.07] border-white/[0.10] text-white/90 placeholder:text-white/30"
+                        className="bg-white dark:bg-white/[0.07] border-black/[0.08] dark:border-white/[0.10] text-gray-800 dark:text-white/90 placeholder:text-gray-400 dark:placeholder:text-white/30"
                       />
                     </div>
                   </div>
                   <div>
-                    <Label className="text-white/60 text-xs mb-1 block">主机地址</Label>
+                    <Label className="text-gray-500 dark:text-white/60 text-xs mb-1 block">主机地址</Label>
                     <Input
                       value={host}
                       onChange={(e) => setHost(e.target.value)}
                       placeholder="192.168.1.100"
-                      className="bg-white/[0.07] border-white/[0.10] text-white/90 placeholder:text-white/30"
+                      className="bg-white dark:bg-white/[0.07] border-black/[0.08] dark:border-white/[0.10] text-gray-800 dark:text-white/90 placeholder:text-gray-400 dark:placeholder:text-white/30"
                     />
                   </div>
                   <div>
-                    <Label className="text-white/60 text-xs mb-1 block">用户名</Label>
+                    <Label className="text-gray-500 dark:text-white/60 text-xs mb-1 block">用户名</Label>
                     <Input
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       placeholder="root"
-                      className="bg-white/[0.07] border-white/[0.10] text-white/90 placeholder:text-white/30"
+                      className="bg-white dark:bg-white/[0.07] border-black/[0.08] dark:border-white/[0.10] text-gray-800 dark:text-white/90 placeholder:text-gray-400 dark:placeholder:text-white/30"
                     />
                   </div>
                 </div>
 
-                <div className="rounded-xl bg-white/[0.04] border border-white/[0.06] p-3 space-y-3">
-                  <div className="flex gap-1 p-0.5 rounded-lg bg-white/[0.04]">
+                <div className="rounded-xl bg-gray-50 dark:bg-white/[0.04] border border-black/[0.04] dark:border-white/[0.06] p-3 space-y-3">
+                  <div className="flex gap-1 p-0.5 rounded-lg bg-black/[0.03] dark:bg-white/[0.04]">
                     <button
                       onClick={() => setAuthType("password")}
                       className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
                         authType === "password"
-                          ? "bg-white/[0.12] text-white/90"
-                          : "text-white/45 hover:text-white/70"
+                          ? "bg-white dark:bg-white/[0.12] text-gray-800 dark:text-white/90 shadow-sm"
+                          : "text-gray-500 dark:text-white/45 hover:text-gray-700 dark:hover:text-white/70"
                       }`}
                     >
                       密码认证
@@ -891,8 +891,8 @@ function ServerFormDialog({
                       onClick={() => setAuthType("key")}
                       className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
                         authType === "key"
-                          ? "bg-white/[0.12] text-white/90"
-                          : "text-white/45 hover:text-white/70"
+                          ? "bg-white dark:bg-white/[0.12] text-gray-800 dark:text-white/90 shadow-sm"
+                          : "text-gray-500 dark:text-white/45 hover:text-gray-700 dark:hover:text-white/70"
                       }`}
                     >
                       密钥认证
@@ -901,30 +901,30 @@ function ServerFormDialog({
 
                   {authType === "password" ? (
                     <div className="relative">
-                      <Label className="text-white/60 text-xs mb-1 block">密码</Label>
+                      <Label className="text-gray-500 dark:text-white/60 text-xs mb-1 block">密码</Label>
                       <Input
                         type={showPwd ? "text" : "password"}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="输入密码"
-                        className="bg-white/[0.07] border-white/[0.10] text-white/90 placeholder:text-white/30 pr-9"
+                        className="bg-white dark:bg-white/[0.07] border-black/[0.08] dark:border-white/[0.10] text-gray-800 dark:text-white/90 placeholder:text-gray-400 dark:placeholder:text-white/30 pr-9"
                       />
                       <button
                         type="button"
                         onClick={() => setShowPwd(!showPwd)}
-                        className="absolute right-2 top-[26px] text-white/40 hover:text-white/70 transition-colors"
+                        className="absolute right-2 top-[26px] text-gray-400 dark:text-white/40 hover:text-gray-600 dark:hover:text-white/70 transition-colors"
                       >
                         {showPwd ? <EyeOff size={14} /> : <Eye size={14} />}
                       </button>
                     </div>
                   ) : (
                     <div>
-                      <Label className="text-white/60 text-xs mb-1 block">私钥路径</Label>
+                      <Label className="text-gray-500 dark:text-white/60 text-xs mb-1 block">私钥路径</Label>
                       <Input
                         value={keyPath}
                         onChange={(e) => setKeyPath(e.target.value)}
                         placeholder="~/.ssh/id_rsa"
-                        className="bg-white/[0.07] border-white/[0.10] text-white/90 placeholder:text-white/30"
+                        className="bg-white dark:bg-white/[0.07] border-black/[0.08] dark:border-white/[0.10] text-gray-800 dark:text-white/90 placeholder:text-gray-400 dark:placeholder:text-white/30"
                       />
                     </div>
                   )}
@@ -938,7 +938,7 @@ function ServerFormDialog({
                   whileTap={{ scale: 0.98 }}
                   onClick={handleTest}
                   disabled={!host.trim() || testing}
-                  className="flex-1 py-2 rounded-xl text-sm font-medium text-white/70 bg-white/[0.06] border border-white/[0.10] hover:bg-white/[0.10] transition-all disabled:opacity-30"
+                  className="flex-1 py-2 rounded-xl text-sm font-medium text-gray-600 dark:text-white/70 bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.08] dark:border-white/[0.10] hover:bg-black/[0.06] dark:hover:bg-white/[0.10] transition-all disabled:opacity-30"
                 >
                   <span className="flex items-center justify-center gap-1.5">
                     {testing ? (
@@ -1245,7 +1245,7 @@ export default function ServerHome() {
       <div
         ref={scrollRef}
         className="relative z-10 h-full overflow-y-auto px-5 pt-3 pb-20"
-        style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.1) transparent" }}
+        style={{ scrollbarWidth: "thin" }}
       >
         {/* ===== Server Section (Collapsible) ===== */}
         <div className="mb-6">
@@ -1256,22 +1256,22 @@ export default function ServerHome() {
               whileTap={servers.length > 0 ? { scale: 0.98 } : {}}
             >
               <motion.div
-                className="w-8 h-8 rounded-xl bg-white/[0.06] border border-white/[0.08] flex items-center justify-center"
+                className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] flex items-center justify-center"
                 whileHover={{
                   boxShadow: "0 0 20px rgba(167,139,250,0.2), inset 0 0 8px rgba(167,139,250,0.1)",
                 }}
                 transition={{ duration: 0.4 }}
               >
-                <Monitor size={16} className="text-white/80" />
+                <Monitor size={16} className="text-gray-700 dark:text-white/80" />
               </motion.div>
-              <span className="text-white/90 text-sm font-semibold">我的服务器</span>
+              <span className="text-gray-800 dark:text-white/90 text-sm font-semibold">我的服务器</span>
               {servers.length > 0 && (
                 <motion.span
                   key={servers.length}
                   initial={{ scale: 0, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   transition={{ type: "spring", stiffness: 500, damping: 20 }}
-                  className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-violet-500/20 text-violet-300 border border-violet-500/20"
+                  className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-violet-500/20 text-violet-600 dark:text-violet-300 border border-violet-500/20"
                 >
                   {servers.length}
                 </motion.span>
@@ -1281,7 +1281,7 @@ export default function ServerHome() {
                   animate={{ rotate: serversCollapsed ? -90 : 0 }}
                   transition={{ type: "spring", stiffness: 400, damping: 25 }}
                 >
-                  <ChevronDown size={14} className="text-white/40" />
+                  <ChevronDown size={14} className="text-gray-400 dark:text-white/40" />
                 </motion.div>
               )}
               {serversCollapsed && servers.length > 0 && (
@@ -1289,7 +1289,7 @@ export default function ServerHome() {
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0 }}
-                  className="text-white/35 text-xs"
+                  className="text-gray-400 dark:text-white/35 text-xs"
                 >
                   已选 {selectedIds.size}/{servers.length}
                 </motion.span>
@@ -1302,7 +1302,7 @@ export default function ServerHome() {
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={handleExportConfig}
-                  className="px-3 py-1.5 rounded-xl text-xs font-medium text-white/60 bg-white/[0.06] border border-white/[0.10] hover:bg-white/[0.10] hover:text-white/85 transition-all"
+                  className="px-3 py-1.5 rounded-xl text-xs font-medium text-gray-500 dark:text-white/60 bg-black/[0.03] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.10] hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-700 dark:hover:text-white/85 transition-all"
                 >
                   <span className="flex items-center gap-1.5">
                     <Download size={13} />
@@ -1314,7 +1314,7 @@ export default function ServerHome() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleImportConfig}
-                className="px-3 py-1.5 rounded-xl text-xs font-medium text-white/70 bg-white/[0.06] border border-white/[0.10] hover:bg-white/[0.10] hover:text-white/90 transition-all"
+                  className="px-3 py-1.5 rounded-xl text-xs font-medium text-gray-600 dark:text-white/70 bg-black/[0.03] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.10] hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-800 dark:hover:text-white/90 transition-all"
               >
                 <span className="flex items-center gap-1.5">
                   <Import size={13} />
@@ -1328,7 +1328,7 @@ export default function ServerHome() {
                   setEditingServer(null);
                   setDialogOpen(true);
                 }}
-                className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-white/90 bg-gradient-to-r from-violet-500/25 to-indigo-500/25 border border-violet-400/30 hover:from-violet-500/35 hover:to-indigo-500/35 hover:border-violet-400/45 transition-all"
+                className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-violet-700 dark:text-white/90 bg-gradient-to-r from-violet-500/15 dark:from-violet-500/25 to-indigo-500/15 dark:to-indigo-500/25 border border-violet-400/30 hover:from-violet-500/25 dark:hover:from-violet-500/35 hover:to-indigo-500/25 dark:hover:to-indigo-500/35 hover:border-violet-400/45 transition-all"
               >
                 <span className="flex items-center gap-1.5">
                   <Plus size={14} />
@@ -1386,7 +1386,7 @@ export default function ServerHome() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
           >
-            <div className="backdrop-blur-xl bg-white/[0.04] border border-white/[0.08] rounded-2xl p-5 mb-6 shadow-[0_4px_24px_rgba(0,0,0,0.15)]">
+              <div className="backdrop-blur-xl bg-white/70 dark:bg-white/[0.04] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-5 mb-6 shadow-[0_4px_24px_rgba(0,0,0,0.04)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.15)]">
               <SectionHeader icon={Terminal} title="执行命令" />
               <CommandInput value={command} onChange={setCommand} disabled={executing} />
               <div className="flex items-center justify-between mt-4">
@@ -1413,7 +1413,7 @@ export default function ServerHome() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
             >
-              <div className="backdrop-blur-xl bg-white/[0.04] border border-white/[0.08] rounded-2xl p-5 shadow-[0_4px_24px_rgba(0,0,0,0.15)]">
+              <div className="backdrop-blur-xl bg-white/70 dark:bg-white/[0.04] border border-black/[0.06] dark:border-white/[0.08] rounded-2xl p-5 shadow-[0_4px_24px_rgba(0,0,0,0.04)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.15)]">
                 <SectionHeader
                   icon={CheckCircle2}
                   title="执行结果"

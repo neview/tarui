@@ -68,8 +68,6 @@ export function WxRibaoForm({ onSubmit, onCancel, loading }: WxRibaoFormProps) {
     }
   };
 
-  const today = new Date().toISOString().split("T")[0];
-
   return (
     <form id="wxribao-form" onSubmit={handleSubmit} noValidate>
       <div className="grid gap-4">
@@ -119,7 +117,6 @@ export function WxRibaoForm({ onSubmit, onCancel, loading }: WxRibaoFormProps) {
               name="startDate"
               type="date"
               value={startDate}
-              max={today}
               onClick={openNativeDatePicker}
               className={`cursor-pointer ${errors.startDate ? "border-red-500" : ""}`}
               onChange={(e) => {
@@ -144,7 +141,6 @@ export function WxRibaoForm({ onSubmit, onCancel, loading }: WxRibaoFormProps) {
               name="endDate"
               type="date"
               value={endDate}
-              max={today}
               min={startDate}
               onClick={openNativeDatePicker}
               className={`cursor-pointer ${errors.endDate ? "border-red-500" : ""}`}

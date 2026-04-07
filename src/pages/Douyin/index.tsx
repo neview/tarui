@@ -49,7 +49,7 @@ export default function Douyin() {
   const Panel = panels[displayPanel]
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#050510]">
+    <div className="relative h-full w-full overflow-hidden bg-gray-50 dark:bg-[#050510]">
       <SplashCursor />
 
       <div ref={contentRef} className="absolute inset-0 z-10">
