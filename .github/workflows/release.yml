@@ -30,6 +30,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read release notes from tag
+        id: tag_notes
+        shell: bash
+        run: |
+          TAG_MSG=$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" | head -1)
+          if [ -z "$TAG_MSG" ] || echo "$TAG_MSG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            TAG_MSG=""
+          fi
+          echo "notes=$TAG_MSG" >> "$GITHUB_OUTPUT"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -65,7 +77,11 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'tauri-app v__VERSION__'
           releaseBody: |
-            ## 下载说明
+            ${{ steps.tag_notes.outputs.notes && format('{0}
+
+            ---
+
+            ', steps.tag_notes.outputs.notes) || '' }}## 下载说明
             - **Windows**: 下载 `.exe` 或 `.msi` 文件
             - **macOS (Apple Silicon M1/M2/M3)**: 下载 `aarch64.dmg` 文件
             - **macOS (Intel)**: 下载 `x64.dmg` 文件

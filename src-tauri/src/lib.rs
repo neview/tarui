@@ -433,13 +433,22 @@ async fn run_shell_command(
     Ok(())
 }
 
+fn strip_unc_prefix(p: &std::path::Path) -> std::path::PathBuf {
+    let s = p.to_string_lossy();
+    if s.starts_with(r"\\?\") {
+        std::path::PathBuf::from(&s[4..])
+    } else {
+        p.to_path_buf()
+    }
+}
+
 fn resolve_deploy_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     // 开发模式: src-tauri/scripts/deploy-cos.js
     let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
         .join("deploy-cos.js");
     if dev_path.is_file() {
-        return Ok(dev_path);
+        return Ok(strip_unc_prefix(&dev_path));
     }
 
     // 打包模式: resource_dir/scripts/deploy-cos.js
@@ -450,7 +459,7 @@ fn resolve_deploy_script(app: &AppHandle) -> Result<std::path::PathBuf, String> 
         .join("scripts")
         .join("deploy-cos.js");
     if resource_path.is_file() {
-        return Ok(resource_path);
+        return Ok(strip_unc_prefix(&resource_path));
     }
 
     Err(format!(
@@ -500,13 +509,15 @@ async fn run_build_and_deploy(app: AppHandle, params: DeployParams) -> Result<()
     let _ = app.emit(event, "[2/5] 正在上传文件到 COS...");
 
     let script_path = resolve_deploy_script(&app)?;
+    let _ = app.emit(event, format!("[debug] script_path={}, dist_path={}", script_path.display(), dist_path.display()));
 
+    let clean_dist = strip_unc_prefix(&dist_path);
     let cos_params = serde_json::json!({
         "SecretId": params.cos_secret_id,
         "SecretKey": params.cos_secret_key,
         "Region": params.cos_region,
         "Bucket": params.cos_bucket,
-        "distPath": dist_path.to_string_lossy()
+        "distPath": clean_dist.to_string_lossy()
     });
 
     run_shell_command(

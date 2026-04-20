@@ -6,6 +6,15 @@ import { Download, X, RotateCcw, CheckCircle2, Loader2 } from "lucide-react"
 
 type Stage = "idle" | "available" | "downloading" | "ready" | "error"
 
+function extractNotes(body?: string): string {
+  if (!body) return ""
+  const line = body
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l && !l.startsWith("#") && !l.startsWith("-") && l !== "---")
+  return line?.slice(0, 80) || ""
+}
+
 export default function UpdateChecker() {
   const [stage, setStage] = useState<Stage>("idle")
   const [update, setUpdate] = useState<Update | null>(null)
@@ -103,7 +112,10 @@ export default function UpdateChecker() {
                 <span className="text-sm font-semibold text-zinc-100">发现新版本</span>
               </div>
               <p className="text-xs text-zinc-400">
-                v{update?.version} 已发布{update?.body ? `：${update.body.slice(0, 80)}` : ""}
+                v{update?.version} 已发布{(() => {
+                  const notes = extractNotes(update?.body)
+                  return notes ? `：${notes}` : ""
+                })()}
               </p>
               <button
                 onClick={handleDownload}
