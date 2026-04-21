@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -8,19 +9,38 @@ use std::os::windows::process::CommandExt;
 
 use chrono::Utc;
 use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, PhysicalPosition, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 type HmacSha256 = Hmac<Sha256>;
+type HmacSha1 = Hmac<Sha1>;
 
 static RUNNING_PID: AtomicU32 = AtomicU32::new(0);
 
 lazy_static::lazy_static!(
     static ref CURRENT_CHILD: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    /// 正在进行的部署任务的 CancellationToken 注册表，key = deploy_id
+    static ref DEPLOY_CANCEL_TOKENS: Arc<Mutex<HashMap<String, CancellationToken>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 );
+
+/// 取消正在进行的部署任务（由前端点击删除日志时调用）
+#[tauri::command]
+async fn cancel_deploy(deploy_id: String) -> Result<(), String> {
+    let mut map = DEPLOY_CANCEL_TOKENS.lock().await;
+    if let Some(token) = map.remove(&deploy_id) {
+        token.cancel();
+        Ok(())
+    } else {
+        // 任务可能已经完成，不视为错误
+        Ok(())
+    }
+}
 
 fn resolve_project_root() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("无法获取 exe 路径: {}", e))?;
@@ -352,6 +372,7 @@ async fn run_shell_command(
     args: &[&str],
     cwd: &std::path::Path,
     event_name: &str,
+    cancel: &CancellationToken,
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let needs_shell = matches!(program, "npm" | "npx" | "pnpm" | "yarn");
@@ -414,10 +435,24 @@ async fn run_shell_command(
         }
     });
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| format!("等待命令完成失败: {}", e))?;
+    // 轮询等待子进程退出，同时监听取消信号
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => return Err(format!("等待命令完成失败: {}", e)),
+        }
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                let _ = child.kill().await;
+                // 让 child 彻底收尾
+                let _ = child.wait().await;
+                return Err("已取消".to_string());
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(150)) => {}
+        }
+    };
 
     let timeout = tokio::time::Duration::from_secs(5);
     let _ = tokio::time::timeout(timeout, stdout_handle).await;
@@ -442,31 +477,275 @@ fn strip_unc_prefix(p: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-fn resolve_deploy_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    // 开发模式: src-tauri/scripts/deploy-cos.js
-    let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join("deploy-cos.js");
-    if dev_path.is_file() {
-        return Ok(strip_unc_prefix(&dev_path));
+// ==================== 腾讯云 COS 原生上传 (v5 签名) ====================
+
+fn sha1_hex(data: &[u8]) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
+fn hmac_sha1_hex(key: &[u8], data: &[u8]) -> String {
+    let mut mac = HmacSha1::new_from_slice(key).expect("HMAC accepts any key size");
+    mac.update(data);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// 按 COS 规范对 URL 路径做 encode：保留 `/`，其余字符用 %XX
+fn cos_encode_path(key: &str) -> String {
+    key.split('/')
+        .map(|seg| urlencoding::encode(seg).into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// 生成 COS PUT Object 请求签名（只签 host 头，v5 算法）
+/// 参考：https://cloud.tencent.com/document/product/436/7778
+///
+/// 注意：COS 服务端验签用的是 **URL 解码后** 的原始路径与 header，所以
+/// `UriPathname` 与 `http_headers` 必须用原始字符串，而不是 URL-encoded 后的。
+fn build_cos_authorization(
+    secret_id: &str,
+    secret_key: &str,
+    method: &str, // lowercase, e.g. "put"
+    key: &str,    // 对象 key，如 "assets/main.js"，无前导 /
+    host: &str,
+) -> String {
+    let now = Utc::now().timestamp();
+    let start = now - 60;
+    let end = now + 3600;
+    let key_time = format!("{};{}", start, end);
+
+    let sign_key = hmac_sha1_hex(secret_key.as_bytes(), key_time.as_bytes());
+
+    let uri_pathname = format!("/{}", key);
+    let header_list = "host";
+    let http_headers = format!("host={}", host);
+
+    let http_string = format!("{}\n{}\n\n{}\n", method, uri_pathname, http_headers);
+    let string_to_sign = format!(
+        "sha1\n{}\n{}\n",
+        key_time,
+        sha1_hex(http_string.as_bytes())
+    );
+
+    let signature = hmac_sha1_hex(sign_key.as_bytes(), string_to_sign.as_bytes());
+
+    format!(
+        "q-sign-algorithm=sha1&q-ak={sid}&q-sign-time={kt}&q-key-time={kt}&q-header-list={hl}&q-url-param-list=&q-signature={sig}",
+        sid = secret_id,
+        kt = key_time,
+        hl = header_list,
+        sig = signature,
+    )
+}
+
+/// 判断错误是否值得重试（网络错误 / 5xx / 429 重试，其它不重试）
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+}
+
+async fn upload_single_file_to_cos(
+    client: &reqwest::Client,
+    secret_id: &str,
+    secret_key: &str,
+    bucket: &str,
+    region: &str,
+    key: &str,
+    file_path: &std::path::Path,
+    cancel: &CancellationToken,
+) -> Result<(), String> {
+    if cancel.is_cancelled() {
+        return Err("已取消".to_string());
     }
 
-    // 打包模式: resource_dir/scripts/deploy-cos.js
-    let resource_path = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("无法获取资源目录: {}", e))?
-        .join("scripts")
-        .join("deploy-cos.js");
-    if resource_path.is_file() {
-        return Ok(strip_unc_prefix(&resource_path));
+    let body = tokio::fs::read(file_path)
+        .await
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+
+    let host = format!("{}.cos.{}.myqcloud.com", bucket, region);
+    let url = format!("https://{}/{}", host, cos_encode_path(key));
+    let content_type = mime_guess::from_path(key)
+        .first_or_octet_stream()
+        .to_string();
+
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_err: String = String::new();
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        if cancel.is_cancelled() {
+            return Err("已取消".to_string());
+        }
+
+        // 每次重试都重新签名，避免 key_time 过期
+        let authorization = build_cos_authorization(secret_id, secret_key, "put", key, &host);
+
+        let send_fut = client
+            .put(&url)
+            .header("Authorization", &authorization)
+            .header("Content-Type", &content_type)
+            .body(body.clone())
+            .send();
+
+        let send_result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err("已取消".to_string()),
+            r = send_fut => r,
+        };
+
+        match send_result {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    return Ok(());
+                }
+                let text = resp.text().await.unwrap_or_default();
+                last_err = format!("COS 返回 {}: {}", status, text);
+                if !is_retryable_status(status) {
+                    return Err(last_err);
+                }
+            }
+            Err(e) => {
+                last_err = format!("HTTP 请求失败: {}", e);
+            }
+        }
+
+        if attempt < MAX_ATTEMPTS {
+            let delay_ms = 500u64 * (1u64 << (attempt - 1)); // 500ms, 1s
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err("已取消".to_string()),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
+            }
+        }
     }
 
-    Err(format!(
-        "未找到 deploy-cos.js 脚本，已检查:\n  开发: {}\n  打包: {}",
-        dev_path.display(),
-        resource_path.display()
-    ))
+    Err(format!("重试 {} 次后仍失败: {}", MAX_ATTEMPTS, last_err))
+}
+
+async fn upload_dir_to_cos(
+    app: &AppHandle,
+    event: &str,
+    secret_id: &str,
+    secret_key: &str,
+    bucket: &str,
+    region: &str,
+    dist_path: &std::path::Path,
+    cancel: &CancellationToken,
+) -> Result<(), String> {
+    if secret_id.trim().is_empty()
+        || secret_key.trim().is_empty()
+        || bucket.trim().is_empty()
+        || region.trim().is_empty()
+    {
+        return Err("COS 凭证不完整：请检查 SecretId / SecretKey / Bucket / Region".to_string());
+    }
+
+    let mut files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for entry in walkdir::WalkDir::new(dist_path) {
+        let entry = entry.map_err(|e| format!("扫描目录失败: {}", e))?;
+        if entry.file_type().is_file() {
+            let abs = entry.path().to_path_buf();
+            let rel = abs
+                .strip_prefix(dist_path)
+                .map_err(|e| format!("路径处理失败: {}", e))?;
+            let key = rel.to_string_lossy().replace('\\', "/");
+            files.push((abs, key));
+        }
+    }
+
+    let total = files.len();
+    if total == 0 {
+        return Err("dist 目录为空，没有可上传的文件".to_string());
+    }
+    let _ = app.emit(event, format!("发现 {} 个文件待上传", total));
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    let concurrency = 8usize;
+    let semaphore = Arc::new(Semaphore::new(concurrency));
+    let done_counter = Arc::new(AtomicU32::new(0));
+
+    let mut handles = Vec::with_capacity(total);
+    for (abs_path, key) in files {
+        let sem = semaphore.clone();
+        let client = client.clone();
+        let secret_id = secret_id.to_string();
+        let secret_key = secret_key.to_string();
+        let bucket = bucket.to_string();
+        let region = region.to_string();
+        let app = app.clone();
+        let event = event.to_string();
+        let counter = done_counter.clone();
+        let cancel = cancel.clone();
+
+        let handle = tokio::spawn(async move {
+            if cancel.is_cancelled() {
+                return Err("已取消".to_string());
+            }
+            let _permit = sem.acquire().await.map_err(|e| format!("并发控制失败: {}", e))?;
+            upload_single_file_to_cos(
+                &client,
+                &secret_id,
+                &secret_key,
+                &bucket,
+                &region,
+                &key,
+                &abs_path,
+                &cancel,
+            )
+            .await
+            .map_err(|e| format!("上传 {} 失败: {}", key, e))?;
+
+            let done = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            let _ = app.emit(
+                event.as_str(),
+                format!("  [{}/{}] ✓ {}", done, total, key),
+            );
+            Ok::<(), String>(())
+        });
+        handles.push(handle);
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut cancelled_count: usize = 0;
+    for h in handles {
+        match h.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if e.contains("已取消") {
+                    cancelled_count += 1;
+                } else {
+                    errors.push(e);
+                }
+            }
+            Err(e) => errors.push(format!("任务调度失败: {}", e)),
+        }
+    }
+
+    // 如果是用户主动取消，返回统一的取消错误
+    if cancel.is_cancelled() {
+        return Err("已取消".to_string());
+    }
+
+    let _ = cancelled_count; // 未取消时忽略
+
+    if !errors.is_empty() {
+        const MAX_SHOWN: usize = 5;
+        let shown = errors.len().min(MAX_SHOWN);
+        let head = errors[..shown].join("\n");
+        let remaining = errors.len().saturating_sub(shown);
+        let summary = if remaining > 0 {
+            format!("{} 个文件上传失败。前 {} 条错误:\n{}\n... 另有 {} 条省略", errors.len(), shown, head, remaining)
+        } else {
+            format!("{} 个文件上传失败:\n{}", errors.len(), head)
+        };
+        return Err(summary);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -483,6 +762,31 @@ async fn run_build_and_deploy(app: AppHandle, params: DeployParams) -> Result<()
     let event: String = format!("deploy-log-{}", params.deploy_id);
     let event = event.as_str();
 
+    // 注册取消 token
+    let cancel = CancellationToken::new();
+    {
+        let mut map = DEPLOY_CANCEL_TOKENS.lock().await;
+        map.insert(params.deploy_id.clone(), cancel.clone());
+    }
+
+    // 包装：无论成败都记得清理 token
+    let result = run_build_and_deploy_inner(&app, event, &params, &project_path, &cancel).await;
+
+    {
+        let mut map = DEPLOY_CANCEL_TOKENS.lock().await;
+        map.remove(&params.deploy_id);
+    }
+
+    result
+}
+
+async fn run_build_and_deploy_inner(
+    app: &AppHandle,
+    event: &str,
+    params: &DeployParams,
+    project_path: &std::path::Path,
+    cancel: &CancellationToken,
+) -> Result<(), String> {
     // ===== Step 1: Build =====
     let _ = app.emit(event, "[1/5] 正在执行 build 命令...");
 
@@ -495,8 +799,15 @@ async fn run_build_and_deploy(app: AppHandle, params: DeployParams) -> Result<()
         return Err("build 命令不能为空".to_string());
     }
 
-    run_shell_command(&app, parts[0], &parts[1..], &project_path, event).await
-        .map_err(|e| format!("Build 失败: {}", e))?;
+    run_shell_command(app, parts[0], &parts[1..], project_path, event, cancel)
+        .await
+        .map_err(|e| {
+            if e == "已取消" {
+                e
+            } else {
+                format!("Build 失败: {}", e)
+            }
+        })?;
 
     let dist_path = project_path.join("dist");
     if !dist_path.is_dir() {
@@ -505,35 +816,38 @@ async fn run_build_and_deploy(app: AppHandle, params: DeployParams) -> Result<()
 
     let _ = app.emit(event, "[1/5] Build 完成 ✓");
 
-    // ===== Step 2: Upload to COS via Node script =====
+    if cancel.is_cancelled() {
+        return Err("已取消".to_string());
+    }
+
+    // ===== Step 2: Upload to COS (native Rust, no Node.js required) =====
     let _ = app.emit(event, "[2/5] 正在上传文件到 COS...");
 
-    let script_path = resolve_deploy_script(&app)?;
-    let _ = app.emit(event, format!("[debug] script_path={}, dist_path={}", script_path.display(), dist_path.display()));
-
     let clean_dist = strip_unc_prefix(&dist_path);
-    let cos_params = serde_json::json!({
-        "SecretId": params.cos_secret_id,
-        "SecretKey": params.cos_secret_key,
-        "Region": params.cos_region,
-        "Bucket": params.cos_bucket,
-        "distPath": clean_dist.to_string_lossy()
-    });
-
-    run_shell_command(
-        &app,
-        "node",
-        &[
-            script_path.to_str().ok_or("脚本路径包含非法字符")?,
-            &cos_params.to_string(),
-        ],
-        &project_path,
+    upload_dir_to_cos(
+        app,
         event,
+        &params.cos_secret_id,
+        &params.cos_secret_key,
+        &params.cos_bucket,
+        &params.cos_region,
+        &clean_dist,
+        cancel,
     )
     .await
-    .map_err(|e| format!("COS 上传失败: {}", e))?;
+    .map_err(|e| {
+        if e == "已取消" {
+            e
+        } else {
+            format!("COS 上传失败: {}", e)
+        }
+    })?;
 
     let _ = app.emit(event, "[2/5] COS 上传完成 ✓");
+
+    if cancel.is_cancelled() {
+        return Err("已取消".to_string());
+    }
 
     if let Some(domain) = params.cdn_domain.as_deref()
         .map(|d| d.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/'))
@@ -843,6 +1157,7 @@ pub fn run() {
             kill_python_script,
             capture_qr_code,
             run_build_and_deploy,
+            cancel_deploy,
             read_text_file,
             execute_ssh_commands,
             test_ssh_connection

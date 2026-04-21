@@ -19,6 +19,7 @@ import {
   Eraser,
   Import,
   X,
+  RotateCw,
 } from "lucide-react";
 
 // ==================== Data Model ====================
@@ -113,6 +114,8 @@ function GlassCard({ children, className = "" }: { children: ReactNode; classNam
 interface DeploySession {
   id: string;
   compositeKey: string;
+  projectKey: string;
+  envKey: string;
   label: string;
   logs: string[];
   status: "running" | "success" | "error";
@@ -130,6 +133,7 @@ export default function Weixin() {
   const [sessions, setSessions] = useState<DeploySession[]>([]);
   const [statusMap, setStatusMap] = useState<Record<string, DeployStatus>>({});
   const [collapseAll, setCollapseAll] = useState(0);
+  const cancelledIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => { saveAllConfig(config); }, [config]);
 
@@ -164,8 +168,38 @@ export default function Weixin() {
   };
 
   const removeSession = useCallback((id: string) => {
-    setSessions((prev) => prev.filter((s) => s.id !== id));
+    let shouldCancel: { id: string; compositeKey: string } | null = null;
+    setSessions((prev) => {
+      const target = prev.find((s) => s.id === id);
+      if (target && target.status === "running") {
+        shouldCancel = { id, compositeKey: target.compositeKey };
+      }
+      return prev.filter((s) => s.id !== id);
+    });
+    if (shouldCancel) {
+      const { id: cancelId, compositeKey } = shouldCancel;
+      cancelledIdsRef.current.add(cancelId);
+      invoke("cancel_deploy", { deployId: cancelId }).catch(() => {});
+      setStatusMap((m) => ({ ...m, [compositeKey]: "idle" }));
+    }
   }, []);
+
+  const rerunSession = useCallback(
+    (session: DeploySession) => {
+      const isRunning = sessions.some(
+        (s) => s.compositeKey === session.compositeKey && s.status === "running"
+      );
+      if (isRunning) {
+        showError("该环境已有正在运行的部署任务");
+        return;
+      }
+      handleDeployRef.current?.(session.projectKey, session.envKey);
+    },
+    [sessions, showError]
+  );
+
+  // 用 ref 打破循环依赖：handleDeploy 定义在下面但被 rerunSession 引用
+  const handleDeployRef = useRef<((projectKey: string, envKey: string) => void) | null>(null);
 
   const handleDeploy = async (projectKey: string, envKey: string) => {
     const g = config.global;
@@ -193,6 +227,8 @@ export default function Weixin() {
     const session: DeploySession = {
       id: deployId,
       compositeKey,
+      projectKey,
+      envKey,
       label: `${projectLabel} · ${envLabel}`,
       logs: [],
       status: "running",
@@ -225,12 +261,20 @@ export default function Weixin() {
           cdn_domain: env.cdnDomain || null,
         },
       });
+      if (cancelledIdsRef.current.has(deployId)) {
+        cancelledIdsRef.current.delete(deployId);
+        return;
+      }
       setSessions((prev) =>
         prev.map((s) => s.id === deployId ? { ...s, status: "success" } : s)
       );
       setStatusMap((prev) => ({ ...prev, [compositeKey]: "success" }));
       showSuccess(`${projectLabel} · ${envLabel} 部署完成！`);
     } catch (err) {
+      if (cancelledIdsRef.current.has(deployId)) {
+        cancelledIdsRef.current.delete(deployId);
+        return;
+      }
       setSessions((prev) =>
         prev.map((s) => s.id === deployId ? { ...s, status: "error", logs: [...s.logs, `错误: ${err}`] } : s)
       );
@@ -240,6 +284,10 @@ export default function Weixin() {
       unlisten();
     }
   };
+
+  useEffect(() => {
+    handleDeployRef.current = handleDeploy;
+  });
 
   const handleImportConfig = async () => {
     try {
@@ -416,6 +464,7 @@ export default function Weixin() {
                     session={session}
                     count={sessions.length}
                     onRemove={() => removeSession(session.id)}
+                    onRerun={() => rerunSession(session)}
                   />
                 ))}
               </div>
@@ -433,10 +482,12 @@ function LogPanel({
   session,
   count,
   onRemove,
+  onRerun,
 }: {
   session: DeploySession;
   count: number;
   onRemove: () => void;
+  onRerun: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -462,6 +513,8 @@ function LogPanel({
     session.status === "error" ? "bg-red-500" :
     "bg-amber-500 animate-pulse";
 
+  const isRunning = session.status === "running";
+
   return (
     <div
       ref={panelRef}
@@ -477,15 +530,24 @@ function LogPanel({
           <span className={`size-1.5 rounded-full shrink-0 ${statusDot}`} />
           <span className="truncate">{session.label}</span>
         </span>
-        {session.status !== "running" && (
+        <div className="flex items-center gap-0.5 shrink-0">
+          {!isRunning && (
+            <button
+              onClick={onRerun}
+              className="p-0.5 rounded hover:bg-white/10 transition-colors"
+              title="重新执行"
+            >
+              <RotateCw className="size-3 text-muted-foreground" />
+            </button>
+          )}
           <button
             onClick={onRemove}
-            className="shrink-0 p-0.5 rounded hover:bg-white/10 transition-colors"
-            title="关闭"
+            className="p-0.5 rounded hover:bg-white/10 transition-colors"
+            title={isRunning ? "取消并关闭" : "关闭"}
           >
             <X className="size-3 text-muted-foreground" />
           </button>
-        )}
+        </div>
       </div>
       <div
         ref={scrollRef}
