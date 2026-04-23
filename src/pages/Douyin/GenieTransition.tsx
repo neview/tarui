@@ -6,6 +6,8 @@ const EXIT_MAX_STAGGER = 0.16
 const EXIT_DURATION = 0.36
 const ENTER_MAX_STAGGER = 0.16
 const ENTER_DURATION = 0.36
+// 相邻条带之间的重叠量（单位 %）。用于掩盖不同条带由于垂直位移差产生的缝隙。
+const OVERLAP_PCT = 0.5
 
 interface GenieTransitionProps {
   children: ReactNode
@@ -46,8 +48,8 @@ export default function GenieTransition({
         const btmPct = ((i + 1) / SLICES) * 100
         const progress = i / (SLICES - 1)
 
-        const clipTop = Math.max(0, topPct - 0.5)
-        const clipBtm = Math.max(0, 100 - btmPct - 0.5)
+        const clipTop = Math.max(0, topPct - OVERLAP_PCT)
+        const clipBtm = Math.max(0, 100 - btmPct - OVERLAP_PCT)
 
         const travelY = ((SLICES - i - 0.5) / SLICES) * 100
         const distFromSink = 1 - progress

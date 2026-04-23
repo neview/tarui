@@ -27,6 +27,9 @@ lazy_static::lazy_static!(
     /// 正在进行的部署任务的 CancellationToken 注册表，key = deploy_id
     static ref DEPLOY_CANCEL_TOKENS: Arc<Mutex<HashMap<String, CancellationToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    /// Git Pipeline 任务的 CancellationToken 注册表，key = session_id
+    static ref PIPELINE_CANCEL_TOKENS: Arc<Mutex<HashMap<String, CancellationToken>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 );
 
 /// 取消正在进行的部署任务（由前端点击删除日志时调用）
@@ -580,10 +583,13 @@ async fn upload_single_file_to_cos(
         // 每次重试都重新签名，避免 key_time 过期
         let authorization = build_cos_authorization(secret_id, secret_key, "put", key, &host);
 
+        // 显式设置 Content-Length，避免空文件 (如 Element Plus 按需生成的空 CSS)
+        // 在 HTTP/2 下被省略该头导致 COS 返回 411 Length Required
         let send_fut = client
             .put(&url)
             .header("Authorization", &authorization)
             .header("Content-Type", &content_type)
+            .header("Content-Length", body.len().to_string())
             .body(body.clone())
             .send();
 
@@ -1144,6 +1150,566 @@ async fn test_ssh_connection(server: SshServer) -> Result<String, String> {
     }
 }
 
+// ==================== Git Pipeline ====================
+
+#[derive(serde::Serialize, Clone)]
+struct ChangedFile {
+    status: String,
+    path: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct GitStatus {
+    path: String,
+    name: String,
+    is_repo: bool,
+    branch: Option<String>,
+    remote: Option<String>,
+    ahead: u32,
+    behind: u32,
+    modified: u32,
+    added: u32,
+    deleted: u32,
+    renamed: u32,
+    untracked: u32,
+    conflicted: u32,
+    files: Vec<ChangedFile>,
+    error: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 同步执行 git 命令并返回 (exit_code, stdout, stderr)
+fn run_git_sync(
+    cwd: &std::path::Path,
+    args: &[&str],
+) -> Result<(i32, String, String), String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args);
+    cmd.current_dir(cwd);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("执行 git 失败: {} (请确认已安装 git)", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    Ok((code, stdout, stderr))
+}
+
+fn parse_porcelain_line(line: &str) -> Option<ChangedFile> {
+    if line.len() < 3 {
+        return None;
+    }
+    let status = &line[..2];
+    let path = line[3..].trim().to_string();
+    Some(ChangedFile {
+        status: status.to_string(),
+        path,
+    })
+}
+
+#[tauri::command]
+async fn check_git_status(paths: Vec<String>) -> Result<Vec<GitStatus>, String> {
+    let handle = tokio::task::spawn_blocking(move || {
+        let mut results = Vec::new();
+        for p in paths {
+            let path = std::path::PathBuf::from(&p);
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            if !path.is_dir() {
+                results.push(GitStatus {
+                    path: p.clone(),
+                    name,
+                    is_repo: false,
+                    branch: None,
+                    remote: None,
+                    ahead: 0,
+                    behind: 0,
+                    modified: 0,
+                    added: 0,
+                    deleted: 0,
+                    renamed: 0,
+                    untracked: 0,
+                    conflicted: 0,
+                    files: vec![],
+                    error: Some("目录不存在".to_string()),
+                });
+                continue;
+            }
+
+            let is_repo = run_git_sync(&path, &["rev-parse", "--is-inside-work-tree"])
+                .map(|(c, s, _)| c == 0 && s.trim() == "true")
+                .unwrap_or(false);
+
+            if !is_repo {
+                results.push(GitStatus {
+                    path: p.clone(),
+                    name,
+                    is_repo: false,
+                    branch: None,
+                    remote: None,
+                    ahead: 0,
+                    behind: 0,
+                    modified: 0,
+                    added: 0,
+                    deleted: 0,
+                    renamed: 0,
+                    untracked: 0,
+                    conflicted: 0,
+                    files: vec![],
+                    error: Some("不是 git 仓库".to_string()),
+                });
+                continue;
+            }
+
+            let branch = run_git_sync(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .ok()
+                .filter(|(c, _, _)| *c == 0)
+                .map(|(_, s, _)| s.trim().to_string());
+
+            let remote = run_git_sync(&path, &["remote", "get-url", "origin"])
+                .ok()
+                .filter(|(c, _, _)| *c == 0)
+                .map(|(_, s, _)| s.trim().to_string());
+
+            // ahead / behind
+            let (mut ahead, mut behind) = (0u32, 0u32);
+            if let Ok((c, out, _)) = run_git_sync(
+                &path,
+                &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+            ) {
+                if c == 0 {
+                    let parts: Vec<&str> = out.trim().split_whitespace().collect();
+                    if parts.len() == 2 {
+                        behind = parts[0].parse().unwrap_or(0);
+                        ahead = parts[1].parse().unwrap_or(0);
+                    }
+                }
+            }
+
+            // 变更文件
+            let mut files: Vec<ChangedFile> = Vec::new();
+            let (mut modified, mut added, mut deleted, mut renamed, mut untracked, mut conflicted) =
+                (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+            if let Ok((c, out, _)) = run_git_sync(
+                &path,
+                &[
+                    "-c",
+                    "core.quotepath=false",
+                    "status",
+                    "--porcelain=v1",
+                ],
+            ) {
+                if c == 0 {
+                    for line in out.lines() {
+                        if let Some(f) = parse_porcelain_line(line) {
+                            let s = f.status.as_bytes();
+                            if s == b"??" {
+                                untracked += 1;
+                            } else if s[0] == b'U' || s[1] == b'U' || s == b"AA" || s == b"DD" {
+                                conflicted += 1;
+                            } else {
+                                if matches!(s[0], b'A') || matches!(s[1], b'A') {
+                                    added += 1;
+                                } else if matches!(s[0], b'D') || matches!(s[1], b'D') {
+                                    deleted += 1;
+                                } else if matches!(s[0], b'R') || matches!(s[1], b'R') {
+                                    renamed += 1;
+                                } else if matches!(s[0], b'M') || matches!(s[1], b'M') {
+                                    modified += 1;
+                                }
+                            }
+                            files.push(f);
+                        }
+                    }
+                }
+            }
+
+            results.push(GitStatus {
+                path: p.clone(),
+                name,
+                is_repo: true,
+                branch,
+                remote,
+                ahead,
+                behind,
+                modified,
+                added,
+                deleted,
+                renamed,
+                untracked,
+                conflicted,
+                files,
+                error: None,
+            });
+        }
+        results
+    });
+
+    handle.await.map_err(|e| format!("任务执行失败: {}", e))
+}
+
+/// 简易 shell 风格命令解析：支持双/单引号 & 反斜杠转义
+fn split_command_line(cmd: &str) -> Result<Vec<String>, String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote: Option<char> = None;
+    let mut started = false;
+    let mut chars = cmd.chars().peekable();
+    while let Some(c) = chars.next() {
+        match in_quote {
+            Some(q) => {
+                if c == q {
+                    in_quote = None;
+                } else if c == '\\' && q == '"' {
+                    if let Some(&next) = chars.peek() {
+                        if next == '"' || next == '\\' {
+                            cur.push(next);
+                            chars.next();
+                            continue;
+                        }
+                    }
+                    cur.push(c);
+                } else {
+                    cur.push(c);
+                }
+            }
+            None => match c {
+                '"' | '\'' => {
+                    in_quote = Some(c);
+                    started = true;
+                }
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        cur.push(next);
+                        started = true;
+                    }
+                }
+                c if c.is_whitespace() => {
+                    if started {
+                        args.push(std::mem::take(&mut cur));
+                        started = false;
+                    }
+                }
+                c => {
+                    cur.push(c);
+                    started = true;
+                }
+            },
+        }
+    }
+    if in_quote.is_some() {
+        return Err("命令中存在未闭合的引号".to_string());
+    }
+    if started {
+        args.push(cur);
+    }
+    if args.is_empty() {
+        return Err("命令为空".to_string());
+    }
+    Ok(args)
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct PipelineStep {
+    name: String,
+    command: String,
+    enabled: bool,
+    #[serde(rename = "continueOnError", default)]
+    continue_on_error: bool,
+    #[serde(rename = "allowEmptyCommit", default)]
+    allow_empty_commit: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RunPipelineParams {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    repos: Vec<String>,
+    steps: Vec<PipelineStep>,
+    #[serde(rename = "onRepoError", default)]
+    on_repo_error: Option<String>,
+}
+
+#[tauri::command]
+async fn cancel_git_pipeline(session_id: String) -> Result<(), String> {
+    let mut map = PIPELINE_CANCEL_TOKENS.lock().await;
+    if let Some(token) = map.remove(&session_id) {
+        token.cancel();
+    }
+    Ok(())
+}
+
+/// 在指定工作目录执行单条命令，实时把 stdout/stderr 推到事件里
+async fn run_pipeline_step(
+    app: &AppHandle,
+    event: &str,
+    cwd: &std::path::Path,
+    command: &str,
+    cancel: &CancellationToken,
+) -> Result<(i32, String, String), String> {
+    let argv = split_command_line(command)?;
+    let program = &argv[0];
+    let args: Vec<&str> = argv[1..].iter().map(|s| s.as_str()).collect();
+
+    // Windows 下 npm/pnpm/yarn/npx 需要走 cmd /C
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let needs_shell = matches!(
+            program.as_str(),
+            "npm" | "npx" | "pnpm" | "yarn" | "cnpm" | "bun"
+        );
+        let mut c = if needs_shell {
+            let mut c = Command::new("cmd");
+            c.arg("/C");
+            c.arg(program);
+            c
+        } else {
+            Command::new(program)
+        };
+        for a in &args {
+            c.arg(a);
+        }
+        c.creation_flags(CREATE_NO_WINDOW);
+        c
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = Command::new(program);
+        for a in &args {
+            c.arg(a);
+        }
+        c
+    };
+
+    cmd.current_dir(cwd);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("启动命令 {} 失败: {}", program, e))?;
+
+    let stdout = child.stdout.take().ok_or("无法捕获 stdout")?;
+    let stderr = child.stderr.take().ok_or("无法捕获 stderr")?;
+
+    let stdout_buf = Arc::new(Mutex::new(String::new()));
+    let stderr_buf = Arc::new(Mutex::new(String::new()));
+
+    let out_app = app.clone();
+    let out_event = event.to_string();
+    let out_buf = stdout_buf.clone();
+    let out_handle = tokio::spawn(async move {
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            {
+                let mut b = out_buf.lock().await;
+                b.push_str(&line);
+                b.push('\n');
+            }
+            let _ = out_app.emit(out_event.as_str(), &line);
+        }
+    });
+
+    let err_app = app.clone();
+    let err_event = event.to_string();
+    let err_buf = stderr_buf.clone();
+    let err_handle = tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            {
+                let mut b = err_buf.lock().await;
+                b.push_str(&line);
+                b.push('\n');
+            }
+            let _ = err_app.emit(err_event.as_str(), &line);
+        }
+    });
+
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {}
+            Err(e) => return Err(format!("等待命令完成失败: {}", e)),
+        }
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err("已取消".to_string());
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(150)) => {}
+        }
+    };
+
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), out_handle).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), err_handle).await;
+
+    let so = stdout_buf.lock().await.clone();
+    let se = stderr_buf.lock().await.clone();
+    Ok((status.code().unwrap_or(-1), so, se))
+}
+
+#[tauri::command]
+async fn run_git_pipeline(app: AppHandle, params: RunPipelineParams) -> Result<(), String> {
+    let event = format!("git-pipeline-log-{}", params.session_id);
+    let event = event.as_str();
+
+    let cancel = CancellationToken::new();
+    {
+        let mut map = PIPELINE_CANCEL_TOKENS.lock().await;
+        map.insert(params.session_id.clone(), cancel.clone());
+    }
+
+    let on_err = params
+        .on_repo_error
+        .clone()
+        .unwrap_or_else(|| "stop-all".to_string());
+
+    let result: Result<(), String> = async {
+        for (repo_idx, repo) in params.repos.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err("已取消".to_string());
+            }
+            let repo_path = std::path::PathBuf::from(repo);
+            let repo_name = repo_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            let _ = app.emit(
+                event,
+                format!(
+                    "\n━━━━━━ [{}/{}] {} ━━━━━━",
+                    repo_idx + 1,
+                    params.repos.len(),
+                    if repo_name.is_empty() { repo.clone() } else { repo_name.clone() }
+                ),
+            );
+
+            if !repo_path.is_dir() {
+                let _ = app.emit(event, format!("✗ 目录不存在: {}", repo));
+                if on_err == "stop-all" {
+                    return Err(format!("目录不存在: {}", repo));
+                }
+                continue;
+            }
+
+            let mut repo_failed = false;
+            for (step_idx, step) in params.steps.iter().enumerate() {
+                if !step.enabled {
+                    continue;
+                }
+                if cancel.is_cancelled() {
+                    return Err("已取消".to_string());
+                }
+
+                let _ = app.emit(
+                    event,
+                    format!(
+                        "\n▶ [{}/{}] {} :: $ {}",
+                        step_idx + 1,
+                        params.steps.len(),
+                        step.name,
+                        step.command
+                    ),
+                );
+
+                let res =
+                    run_pipeline_step(&app, event, &repo_path, &step.command, &cancel).await;
+
+                match res {
+                    Ok((code, stdout, stderr)) => {
+                        if code == 0 {
+                            let _ = app.emit(event, format!("  ✓ 完成 ({})", step.name));
+                        } else {
+                            // allow_empty_commit: 常见提示
+                            let lower_out = stdout.to_lowercase();
+                            let lower_err = stderr.to_lowercase();
+                            let is_empty_commit = step.allow_empty_commit
+                                && (lower_out.contains("nothing to commit")
+                                    || lower_out.contains("no changes added to commit")
+                                    || lower_out.contains("working tree clean")
+                                    || lower_err.contains("nothing to commit")
+                                    || lower_err.contains("无文件要提交"));
+
+                            if is_empty_commit {
+                                let _ = app.emit(
+                                    event,
+                                    format!("  ↷ 跳过 ({}): 无改动", step.name),
+                                );
+                                continue;
+                            }
+
+                            let _ = app.emit(
+                                event,
+                                format!("  ✗ 失败 exit={} ({})", code, step.name),
+                            );
+                            if step.continue_on_error {
+                                continue;
+                            }
+                            repo_failed = true;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        if e == "已取消" {
+                            return Err("已取消".to_string());
+                        }
+                        let _ = app.emit(event, format!("  ✗ 失败: {}", e));
+                        if step.continue_on_error {
+                            continue;
+                        }
+                        repo_failed = true;
+                        break;
+                    }
+                }
+            }
+
+            if repo_failed {
+                let _ = app.emit(event, format!("✗ 仓库 {} 执行失败", repo));
+                match on_err.as_str() {
+                    "stop-all" => return Err(format!("仓库 {} 执行失败，已中止", repo)),
+                    _ => continue,
+                }
+            } else {
+                let _ = app.emit(event, format!("✓ 仓库 {} 完成", repo));
+            }
+        }
+        let _ = app.emit(event, "\n🎉 全部任务完成");
+        Ok(())
+    }
+    .await;
+
+    {
+        let mut map = PIPELINE_CANCEL_TOKENS.lock().await;
+        map.remove(&params.session_id);
+    }
+
+    result
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1160,7 +1726,10 @@ pub fn run() {
             cancel_deploy,
             read_text_file,
             execute_ssh_commands,
-            test_ssh_connection
+            test_ssh_connection,
+            check_git_status,
+            run_git_pipeline,
+            cancel_git_pipeline
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
