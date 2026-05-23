@@ -8,7 +8,6 @@ import {
   FolderGit2,
   FolderPlus,
   RefreshCw,
-  Play,
   Square,
   Settings2,
   Trash2,
