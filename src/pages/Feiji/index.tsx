@@ -1,32 +1,63 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { Cloud, HardDrive } from "lucide-react";
 import { ReleaseCard } from "./ReleaseCard";
 import { ReleaseFormData } from "./ReleaseForm";
-import { releaseVersion } from "@/utils/api";
+import { releaseVersion, type ReleaseVersionResponse } from "@/utils/api";
 import { Alert, useAlert } from "@/components/ui/alert";
 import { AnimatedList } from "@/components/ui/animated-list";
 import styles from "./index.module.scss";
 
+type ReleaseMode = "remote" | "local";
+
 export default function Feiji() {
   const { alert, showSuccess, showError, closeAlert } = useAlert();
   const [logs, setLogs] = useState<string[]>([]);
+  const [mode, setMode] = useState<ReleaseMode>("remote");
+  const [loading, setLoading] = useState(false);
 
   const handleFormSubmit = async (data: ReleaseFormData) => {
     // 清空之前的日志
     setLogs([]);
+    setLoading(true);
+
+    // 本地脚本模式：监听 release-log 事件，实时把每一行日志追加显示
+    let unlisten: (() => void) | undefined;
+    if (mode === "local") {
+      unlisten = await listen<string>("release-log", (event) => {
+        setLogs((prev) => [...prev, event.payload]);
+      });
+    }
+
     try {
-      const result = await releaseVersion(data);
+      // 远程接口：走后端 /api/release-version
+      // 本地脚本：走 Tauri 命令 run_release_version（调用本地 release_version.py）
+      // 两者返回结构一致：{ code, message, log }
+      const result: ReleaseVersionResponse =
+        mode === "local"
+          ? await invoke<ReleaseVersionResponse>("run_release_version", {
+              params: data,
+            })
+          : await releaseVersion(data);
+
       // 始终显示 message，根据 code 判断成功或失败
       if (result.code === 1) {
         showSuccess(result.message);
       } else {
         showError(result.message);
       }
-      // 设置日志
-      if (result.log && result.log.length > 0) {
-        setLogs([...result.log].reverse());
+
+      // 远程模式一次性设置日志（后端返回完整 log）；
+      // 本地模式的日志已经通过事件实时追加，无需再覆盖。
+      if (mode !== "local" && result.log && result.log.length > 0) {
+        setLogs(result.log);
       }
     } catch (error) {
       showError(error instanceof Error ? error.message : "请求失败，请稍后重试");
+    } finally {
+      unlisten?.();
+      setLoading(false);
     }
   };
 
@@ -35,12 +66,67 @@ export default function Feiji() {
       <Alert alert={alert} onClose={closeAlert} />
       <div className="flex gap-6 h-full">
         <div className="flex-1">
-          <ReleaseCard onSubmit={handleFormSubmit} />
+          {/* 发布方式切换：远程接口 / 本地脚本 */}
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">发布方式</span>
+            <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
+              <ModeButton
+                active={mode === "remote"}
+                onClick={() => setMode("remote")}
+                disabled={loading}
+                icon={<Cloud className="size-3.5" />}
+                label="远程接口"
+              />
+              <ModeButton
+                active={mode === "local"}
+                onClick={() => setMode("local")}
+                disabled={loading}
+                icon={<HardDrive className="size-3.5" />}
+                label="本地脚本"
+              />
+            </div>
+            <span className="text-[11px] text-muted-foreground/70">
+              {mode === "remote"
+                ? "调用后端服务（默认）"
+                : "服务器不可用时的兜底，需本机已安装 Python 及依赖"}
+            </span>
+          </div>
+          <ReleaseCard onSubmit={handleFormSubmit} loading={loading} />
         </div>
         <div className="flex-1">
           <AnimatedList logs={logs} title="执行日志" />
         </div>
       </div>
     </div>
+  );
+}
+
+function ModeButton({
+  active,
+  onClick,
+  disabled,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+        active
+          ? "bg-primary text-primary-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

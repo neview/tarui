@@ -10,9 +10,10 @@ import { ReleaseForm, ReleaseFormData } from "../ReleaseForm";
 
 interface ReleaseCardProps {
   onSubmit?: (data: ReleaseFormData) => void;
+  loading?: boolean;
 }
 
-export function ReleaseCard({ onSubmit }: ReleaseCardProps) {
+export function ReleaseCard({ onSubmit, loading }: ReleaseCardProps) {
   return (
     <Card className="w-full max-w-sm border-none p-0 shadow-none">
       <MagicCard
@@ -26,7 +27,7 @@ export function ReleaseCard({ onSubmit }: ReleaseCardProps) {
           </CardDescription>
         </CardHeader>
         <CardContent className="p-4">
-          <ReleaseForm onSubmit={onSubmit} />
+          <ReleaseForm onSubmit={onSubmit} loading={loading} />
         </CardContent>
       </MagicCard>
     </Card>

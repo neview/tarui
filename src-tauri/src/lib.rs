@@ -24,6 +24,9 @@ static RUNNING_PID: AtomicU32 = AtomicU32::new(0);
 
 lazy_static::lazy_static!(
     static ref CURRENT_CHILD: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    /// 当前本地脚本（wx_ribao.py --cli）的 stdin，用于发送 "CANCEL" 实现优雅取消
+    static ref CURRENT_STDIN: Arc<Mutex<Option<tokio::process::ChildStdin>>> =
+        Arc::new(Mutex::new(None));
     /// 正在进行的部署任务的 CancellationToken 注册表，key = deploy_id
     static ref DEPLOY_CANCEL_TOKENS: Arc<Mutex<HashMap<String, CancellationToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -45,7 +48,9 @@ async fn cancel_deploy(deploy_id: String) -> Result<(), String> {
     }
 }
 
-fn resolve_project_root() -> Result<std::path::PathBuf, String> {
+/// 在 exe 同级目录及向上 3 级目录中查找指定脚本，返回 (脚本所在目录, 脚本完整路径)。
+/// 这样无论是开发模式（exe 位于 src-tauri/target/debug）还是安装后（脚本与 exe 同级）都能定位到。
+fn resolve_script(script_name: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     let exe = std::env::current_exe().map_err(|e| format!("无法获取 exe 路径: {}", e))?;
     let exe_dir = exe
         .parent()
@@ -67,21 +72,44 @@ fn resolve_project_root() -> Result<std::path::PathBuf, String> {
             .unwrap_or_else(|| exe_dir.clone()),
     ];
     for dir in &candidates {
-        let script = dir.join("wx-ribao.py");
+        let script = dir.join(script_name);
         if script.is_file() {
-            return dir.canonicalize().map_err(|e| {
-                format!("项目根目录无效: {} ({})", dir.display(), e)
-            });
+            let root = dir
+                .canonicalize()
+                .map_err(|e| format!("项目根目录无效: {} ({})", dir.display(), e))?;
+            let script_path = script
+                .canonicalize()
+                .map_err(|e| format!("脚本路径无效: {} ({})", script.display(), e))?;
+            return Ok((root, script_path));
         }
     }
     Err(format!(
-        "未找到 wx-ribao.py，已检查: exe 同级及向上 3 级目录（如 {}）",
+        "未找到 {}，已检查: exe 同级及向上 3 级目录（如 {}）",
+        script_name,
         exe_dir.display()
     ))
 }
 
+/// 微信日报「本地脚本模式」参数（与远程接口 `/api/wx-ribao` 字段一致）。
+#[derive(serde::Deserialize)]
+struct WxRibaoLocalParams {
+    #[serde(rename = "startDate")]
+    start_date: String,
+    #[serde(rename = "endDate")]
+    end_date: String,
+    #[serde(rename = "outputFormat", default)]
+    output_format: Option<String>,
+    #[serde(rename = "indentInTheLine", default)]
+    indent_in_the_line: Option<String>,
+}
+
+/// 通过本地 Python 脚本（wx_ribao.py --cli）获取微信日报。
+///
+/// 作为远程接口 `/api/wx-ribao` 的兜底方案：脚本会把「日志/二维码/结果」以带前缀的
+/// JSON 单行输出到 stdout，这里逐行原样转发为 `wx-ribao-log` 事件，由前端解析。
+/// 需本机已安装 Python、playwright 及 chromium（`playwright install chromium`）。
 #[tauri::command]
-async fn run_wx_ribao(app: AppHandle, params: Vec<String>) -> Result<(), String> {
+async fn run_wx_ribao(app: AppHandle, params: WxRibaoLocalParams) -> Result<(), String> {
     let python_path = std::env::var("PYTHON_PATH")
         .unwrap_or_else(|_| "python".to_string());
 
@@ -92,33 +120,41 @@ async fn run_wx_ribao(app: AppHandle, params: Vec<String>) -> Result<(), String>
         }
     }
 
-    let project_root = resolve_project_root()?;
-    let script_path = project_root.join("wx-ribao.py");
-    if !script_path.is_file() {
-        return Err(format!(
-            "未找到脚本: {}，请确保 wx-ribao.py 在项目根目录",
-            script_path.display()
-        ));
-    }
-    let script_path = script_path
-        .canonicalize()
-        .map_err(|e| format!("脚本路径无效: {}", e))?;
+    let (project_root, script_path) = resolve_script("wx_ribao.py")?;
+
+    let output_format = params
+        .output_format
+        .clone()
+        .unwrap_or_else(|| "1".to_string());
+    let indent = params
+        .indent_in_the_line
+        .clone()
+        .unwrap_or_else(|| "false".to_string());
 
     let mut cmd = Command::new(&python_path);
-    cmd.arg(&script_path);
-    for param in &params {
-        cmd.arg(param);
-    }
+    cmd.arg(&script_path)
+        .arg("--cli")
+        .arg("--startDate").arg(&params.start_date)
+        .arg("--endDate").arg(&params.end_date)
+        .arg("--outputFormat").arg(&output_format)
+        .arg("--indentInTheLine").arg(&indent);
     cmd.current_dir(&project_root);
+    cmd.stdin(Stdio::piped()); // 用于优雅取消：向脚本发送 "CANCEL"
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| format!("启动 Python 进程失败: {}", e))?;
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+    let mut child = cmd.spawn().map_err(|e| {
+        format!("启动 Python 进程失败: {}（请确认已安装 Python 及依赖）", e)
+    })?;
 
     if let Some(pid) = child.id() {
         RUNNING_PID.store(pid, Ordering::SeqCst);
     }
 
+    let stdin = child.stdin.take();
     let stdout = child.stdout.take().ok_or("无法捕获 stdout")?;
     let stderr = child.stderr.take().ok_or("无法捕获 stderr")?;
 
@@ -126,43 +162,92 @@ async fn run_wx_ribao(app: AppHandle, params: Vec<String>) -> Result<(), String>
         let mut child_lock: MutexGuard<'_, Option<Child>> = CURRENT_CHILD.lock().await;
         *child_lock = Some(child);
     }
+    {
+        let mut stdin_lock = CURRENT_STDIN.lock().await;
+        *stdin_lock = stdin;
+    }
 
+    // stdout/stderr 都转发为 wx-ribao-log 事件：结构化行由前端按前缀解析，
+    // 其它原始行（如 Python 报错）直接展示到日志面板。
     let app_stdout = app.clone();
-    let app_stderr = app.clone();
-
     let stdout_handle = tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let _ = app_stdout.emit("python-stdout", line);
+            let _ = app_stdout.emit("wx-ribao-log", line);
         }
     });
 
+    let app_stderr = app.clone();
     let stderr_handle = tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let _ = app_stderr.emit("python-stderr", line);
+            let _ = app_stderr.emit("wx-ribao-log", line);
         }
     });
 
-    let status = {
-        let mut child_lock: MutexGuard<'_, Option<Child>> = CURRENT_CHILD.lock().await;
-        if let Some(mut c) = child_lock.take() {
-            RUNNING_PID.store(0, Ordering::SeqCst);
-            drop(child_lock);
-            c.wait().await.map_err(|e| format!("等待进程失败: {}", e))?
-        } else {
-            return Err("进程已被停止".to_string());
+    // 轮询等待进程结束：把 Child 保留在 CURRENT_CHILD 里（每次轮询之间释放锁），
+    // 这样用户取消时 kill_python_script 仍能拿到并杀掉进程。
+    loop {
+        {
+            let mut child_lock: MutexGuard<'_, Option<Child>> = CURRENT_CHILD.lock().await;
+            match child_lock.as_mut() {
+                Some(c) => match c.try_wait() {
+                    Ok(Some(_status)) => {
+                        // 进程正常结束：退出码非 0（过期/出错）已通过事件告知前端，不额外报错。
+                        *child_lock = None;
+                        RUNNING_PID.store(0, Ordering::SeqCst);
+                        break;
+                    }
+                    Ok(None) => { /* 仍在运行 */ }
+                    Err(e) => {
+                        *child_lock = None;
+                        RUNNING_PID.store(0, Ordering::SeqCst);
+                        return Err(format!("等待进程失败: {}", e));
+                    }
+                },
+                // 已被 kill_python_script 取出（用户取消）
+                None => break,
+            }
         }
-    };
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    {
+        let mut stdin_lock = CURRENT_STDIN.lock().await;
+        *stdin_lock = None;
+    }
 
     let _ = stdout_handle.await;
     let _ = stderr_handle.await;
 
-    if !status.success() {
-        return Err(format!("Python 脚本执行失败，退出码: {:?}", status.code()));
+    Ok(())
+}
+
+/// 优雅停止本地微信日报脚本：向其 stdin 写入 "CANCEL"，让 Python 端主动取消任务、
+/// 关闭 Playwright 浏览器后再退出，避免强杀导致 Playwright 驱动报 EPIPE。
+/// 兜底：若 6 秒内仍未退出，则强制结束进程，防止残留浏览器。
+#[tauri::command]
+async fn stop_wx_ribao() -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    {
+        let mut stdin_lock = CURRENT_STDIN.lock().await;
+        if let Some(stdin) = stdin_lock.as_mut() {
+            let _ = stdin.write_all(b"CANCEL\n").await;
+            let _ = stdin.flush().await;
+        }
     }
+
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        let mut child_lock: MutexGuard<'_, Option<Child>> = CURRENT_CHILD.lock().await;
+        if let Some(child) = child_lock.as_mut() {
+            let _ = child.kill().await;
+            *child_lock = None;
+            RUNNING_PID.store(0, Ordering::SeqCst);
+        }
+    });
 
     Ok(())
 }
@@ -180,92 +265,120 @@ async fn kill_python_script() -> Result<(), String> {
     }
 }
 
+// ==================== 发布微信小程序版本（本地脚本模式） ====================
+
+#[derive(serde::Deserialize)]
+struct ReleaseVersionParams {
+    username: String,
+    password: String,
+    #[serde(rename = "secretKey")]
+    secret_key: String,
+    version: String,
+    name: String,
+    #[serde(rename = "sendMessage", default)]
+    send_message: Option<String>,
+    /// 应用 ID 数组的 JSON 字符串，例如 ["wx123456789"]
+    appid: String,
+    #[serde(default)]
+    desc: String,
+}
+
+/// 通过本地 Python 脚本（release_version.py）发布微信小程序版本。
+/// 作为远程接口 `/api/release-version` 的兜底方案：当服务器不可用时可改用本地脚本。
+///
+/// 返回值结构与远程接口一致：`{ code, message, log }`。
 #[tauri::command]
-async fn capture_qr_code(app: AppHandle) -> Result<String, String> {
+async fn run_release_version(
+    app: AppHandle,
+    params: ReleaseVersionParams,
+) -> Result<serde_json::Value, String> {
     let python_path =
         std::env::var("PYTHON_PATH").unwrap_or_else(|_| "python".to_string());
 
-    {
-        let child_lock: MutexGuard<'_, Option<Child>> = CURRENT_CHILD.lock().await;
-        if child_lock.is_some() {
-            return Err("已有脚本正在运行，请先停止".to_string());
-        }
-    }
+    let (project_root, script_path) = resolve_script("release_version.py")?;
 
-    let project_root = resolve_project_root()?;
-    let script_path = project_root.join("wx-ribao.py");
-    if !script_path.is_file() {
-        return Err(format!(
-            "未找到脚本: {}，请确保 wx-ribao.py 在项目根目录",
-            script_path.display()
-        ));
-    }
-    let script_path = script_path
-        .canonicalize()
-        .map_err(|e| format!("脚本路径无效: {}", e))?;
+    let send_message = params
+        .send_message
+        .clone()
+        .unwrap_or_else(|| "1".to_string());
 
     let mut cmd = Command::new(&python_path);
-    cmd.arg(&script_path);
-    cmd.arg("--step").arg("qr");
+    cmd.arg(&script_path)
+        .arg("--username").arg(&params.username)
+        .arg("--password").arg(&params.password)
+        .arg("--secretKey").arg(&params.secret_key)
+        .arg("--version").arg(&params.version)
+        .arg("--name").arg(&params.name)
+        .arg("--sendMessage").arg(&send_message)
+        .arg("--appid").arg(&params.appid)
+        .arg("--desc").arg(&params.desc);
     cmd.current_dir(&project_root);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("启动 Python 进程失败: {}", e))?;
+        .map_err(|e| format!("启动 Python 进程失败: {}（请确认已安装 Python 及依赖）", e))?;
 
     let stdout = child.stdout.take().ok_or("无法捕获 stdout")?;
     let stderr = child.stderr.take().ok_or("无法捕获 stderr")?;
 
-    {
-        let mut child_lock: MutexGuard<'_, Option<Child>> = CURRENT_CHILD.lock().await;
-        *child_lock = Some(child);
-    }
-
-    let app_stdout = app.clone();
-    let app_stderr = app.clone();
-
-    let _stdout_handle = tokio::spawn(async move {
+    // 实时把 stdout 推给前端（release-log 事件），并捕获 RELEASE_RESULT 结果行
+    let app_out = app.clone();
+    let stdout_handle = tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
+        let mut result_json: Option<String> = None;
         while let Ok(Some(line)) = lines.next_line().await {
-            let _ = app_stdout.emit("python-stdout", line);
+            if let Some(rest) = line.strip_prefix("RELEASE_RESULT:") {
+                result_json = Some(rest.trim().to_string());
+            } else {
+                let _ = app_out.emit("release-log", &line);
+            }
         }
+        result_json
     });
 
-    let _stderr_handle = tokio::spawn(async move {
+    let app_err = app.clone();
+    let stderr_handle = tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
+        let mut buf = String::new();
         while let Ok(Some(line)) = lines.next_line().await {
-            let _ = app_stderr.emit("python-stderr", line);
+            let _ = app_err.emit("release-log", &line);
+            buf.push_str(&line);
+            buf.push('\n');
         }
+        buf
     });
 
-    {
-        let mut child_lock: MutexGuard<'_, Option<Child>> = CURRENT_CHILD.lock().await;
-        if let Some(mut c) = child_lock.take() {
-            drop(child_lock);
-            let status = c
-                .wait().await
-                .map_err(|e| format!("等待进程失败: {}", e))?;
-            if !status.success() {
-                return Err(format!("Python 脚本执行失败，退出码: {:?}", status.code()));
-            }
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("等待进程失败: {}", e))?;
+
+    let result_json = stdout_handle.await.ok().flatten();
+    let stderr_buf = stderr_handle.await.unwrap_or_default();
+
+    if let Some(json_str) = result_json {
+        let value: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| format!("解析脚本结果失败: {}（原始: {}）", e, json_str))?;
+        return Ok(value);
+    }
+
+    // 未拿到结构化结果：脚本可能崩溃或缺少依赖
+    Err(format!(
+        "本地脚本执行失败（退出码: {:?}）。{}",
+        status.code(),
+        if stderr_buf.trim().is_empty() {
+            "未捕获到错误输出，请检查 Python 环境与依赖。".to_string()
         } else {
-            return Err("进程已被停止".to_string());
+            format!("错误输出:\n{}", stderr_buf.trim())
         }
-    }
-
-    let qr_result = std::fs::read_to_string(project_root.join("qr_result_tmp.json"))
-        .ok()
-        .filter(|content| !content.trim().is_empty());
-
-    if let Some(qr) = qr_result {
-        Ok(qr)
-    } else {
-        Err("未找到二维码结果，请查看运行日志".to_string())
-    }
+    ))
 }
 
 // ==================== 腾讯云 CDN API (TC3-HMAC-SHA256) ====================
@@ -1720,8 +1833,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             run_wx_ribao,
+            stop_wx_ribao,
             kill_python_script,
-            capture_qr_code,
+            run_release_version,
             run_build_and_deploy,
             cancel_deploy,
             read_text_file,

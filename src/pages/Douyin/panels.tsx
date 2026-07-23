@@ -1,12 +1,11 @@
 import ServerHome from "./ServerHome"
-import GitPipeline from "./GitPipeline"
 
 export function HomePage() {
   return <ServerHome />
 }
 
 export function BookmarkPage() {
-  return <GitPipeline />
+  return <div className="h-full w-full bg-transparent" />
 }
 
 export function PublishPage() {

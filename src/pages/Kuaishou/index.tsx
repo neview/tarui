@@ -1,12 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "motion/react";
 import { KuaishouCard } from "./KuaishouCard";
 import { WxRibaoFormData } from "./KuaishouForm";
 import { Alert, useAlert } from "@/components/ui/alert";
-import { ScrollText, Copy, Check, Loader2, AlertCircle } from "lucide-react";
+import { ScrollText, Copy, Check, Loader2, AlertCircle, Cloud, HardDrive } from "lucide-react";
 import { Meteors } from "@/components/ui/meteors";
 import { getWxRibao, getWxRibaoStatus, cancelWxRibao } from "@/utils/api";
 import styles from "./index.module.scss";
+
+type RibaoMode = "remote" | "local";
 
 const QR_TOTAL_SECONDS = 120;
 
@@ -68,6 +72,7 @@ function LogPanel({ logs, loading }: { logs: string[]; loading: boolean }) {
 
 export default function Kuaishou() {
   const { alert, showSuccess, showError, closeAlert } = useAlert();
+  const [mode, setMode] = useState<RibaoMode>("remote");
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [qrModalOpen, setQrModalOpen] = useState(false);
@@ -89,6 +94,7 @@ export default function Kuaishou() {
   const sessionIdRef = useRef<string | null>(null);
   const lastLogCountRef = useRef(0);
   const qrShownRef = useRef(false);
+  const unlistenRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!qrModalOpen) return;
@@ -152,6 +158,59 @@ export default function Kuaishou() {
     if (countdownRef.current) clearInterval(countdownRef.current);
   }, []);
 
+  // 展示二维码弹框（远程/本地模式共用）
+  const showQr = useCallback((imageUrl: string) => {
+    if (qrShownRef.current) return;
+    qrShownRef.current = true;
+    setQrImgLoading(true);
+    setQrImgError(false);
+    setQrCode(imageUrl);
+    setQrModalOpen(true);
+    setQrStatus("请用微信扫码登录（有效期约2分钟）");
+  }, []);
+
+  // 追加一批日志（并在检测到「扫码成功」时关闭二维码弹框）
+  const appendLogEntries = useCallback(
+    (entries: { time: string; msg: string }[]) => {
+      if (entries.length === 0) return;
+      setLogs((prev) => [...prev, ...entries.map((l) => `[${l.time}] ${l.msg}`)]);
+      if (entries.some((l) => typeof l.msg === "string" && l.msg.includes("扫码成功"))) {
+        closeQrModal();
+      }
+    },
+    [closeQrModal]
+  );
+
+  // 处理任务终态（远程/本地模式共用）
+  const finishWith = useCallback(
+    (status: string, data?: string | string[], message?: string) => {
+      switch (status) {
+        case "success":
+          closeQrModal();
+          if (data) {
+            const entries = Array.isArray(data) ? data : [data];
+            const lines = entries.flatMap((e) => e.split("\n"));
+            setLogs((prev) => [...prev, "───────────────────", ...lines]);
+          }
+          showSuccess("日报获取完成");
+          break;
+        case "expired":
+          setQrStatus("⏰ 二维码已过期，请重新获取");
+          showError(message || "二维码已过期");
+          break;
+        case "error":
+          closeQrModal();
+          showError(message || "执行过程出错");
+          break;
+        case "cancelled":
+          closeQrModal();
+          setLogs((prev) => [...prev, "⏹ 任务已被取消"]);
+          break;
+      }
+    },
+    [closeQrModal, showSuccess, showError]
+  );
+
   const cancelAll = useCallback(() => {
     cancelledRef.current = true;
     if (abortRef.current) {
@@ -161,10 +220,18 @@ export default function Kuaishou() {
     stopPolling();
     closeQrModal();
 
-    const sid = sessionIdRef.current;
-    if (sid) {
-      cancelWxRibao(sid).catch(() => {});
-      sessionIdRef.current = null;
+    if (mode === "local") {
+      // 本地脚本：优雅通知 Python 取消（关闭浏览器后自行退出），并解绑事件监听
+      invoke("stop_wx_ribao").catch(() => {});
+      unlistenRef.current?.();
+      unlistenRef.current = null;
+    } else {
+      // 远程接口：通知后端取消会话
+      const sid = sessionIdRef.current;
+      if (sid) {
+        cancelWxRibao(sid).catch(() => {});
+        sessionIdRef.current = null;
+      }
     }
 
     setLogs((prev) => [...prev, "⏹ 已取消执行"]);
@@ -172,7 +239,7 @@ export default function Kuaishou() {
     lastLogCountRef.current = 0;
     qrShownRef.current = false;
     console.log("[wx-ribao] 用户取消了所有操作");
-  }, [stopPolling, closeQrModal]);
+  }, [stopPolling, closeQrModal, mode]);
 
   const startPolling = useCallback((sessionId: string) => {
     stopPolling();
@@ -190,51 +257,17 @@ export default function Kuaishou() {
         console.log("[wx-ribao] 轮询状态:", res);
 
         if (res.logs && res.logs.length > lastLogCountRef.current) {
-          const newEntries = res.logs.slice(lastLogCountRef.current);
-          const formatted = newEntries.map((l) => `[${l.time}] ${l.msg}`);
-          setLogs((prev) => [...prev, ...formatted]);
+          appendLogEntries(res.logs.slice(lastLogCountRef.current));
           lastLogCountRef.current = res.logs.length;
-
-          if (newEntries.some((l) => l.msg.includes("扫码成功"))) {
-            closeQrModal();
-          }
         }
 
-        if (res.status === "need_login" && res.imageUrl && !qrShownRef.current) {
-          qrShownRef.current = true;
-          setQrImgLoading(true);
-          setQrImgError(false);
-          setQrCode(res.imageUrl);
-          setQrModalOpen(true);
-          setQrStatus("请用微信扫码登录（有效期约2分钟）");
+        if (res.status === "need_login" && res.imageUrl) {
+          showQr(res.imageUrl);
         }
 
         if (["success", "expired", "error", "cancelled"].includes(res.status)) {
           stopPolling();
-
-          switch (res.status) {
-            case "success":
-              closeQrModal();
-              if (res.data) {
-                const entries = Array.isArray(res.data) ? res.data : [res.data];
-                const lines = entries.flatMap((e) => e.split("\n"));
-                setLogs((prev) => [...prev, "───────────────────", ...lines]);
-              }
-              showSuccess("日报获取完成");
-              break;
-            case "expired":
-              setQrStatus("⏰ 二维码已过期，请重新获取");
-              showError(res.message || "二维码已过期");
-              break;
-            case "error":
-              closeQrModal();
-              showError(res.message || "执行过程出错");
-              break;
-            case "cancelled":
-              closeQrModal();
-              setLogs((prev) => [...prev, "⏹ 任务已被取消"]);
-              break;
-          }
+          finishWith(res.status, res.data, res.message);
           setLoading(false);
           sessionIdRef.current = null;
         }
@@ -246,10 +279,79 @@ export default function Kuaishou() {
         setLoading(false);
       }
     }, 2000);
-  }, [stopPolling, closeQrModal, showSuccess, showError]);
+  }, [stopPolling, closeQrModal, showError, appendLogEntries, showQr, finishWith]);
+
+  // 本地脚本模式：调用 Tauri 命令运行本地 wx_ribao.py，通过 wx-ribao-log 事件驱动日志/二维码/结果。
+  const runLocal = useCallback(
+    async (formData: WxRibaoFormData) => {
+      let resultReceived = false;
+
+      unlistenRef.current?.();
+      const unlisten = await listen<string>("wx-ribao-log", (event) => {
+        if (cancelledRef.current) return;
+        const line = event.payload;
+
+        if (line.startsWith("WXRIBAO_LOG:")) {
+          try {
+            const entry = JSON.parse(line.slice("WXRIBAO_LOG:".length));
+            appendLogEntries([entry]);
+          } catch {
+            /* 忽略无法解析的行 */
+          }
+        } else if (line.startsWith("WXRIBAO_QR:")) {
+          try {
+            const { imageUrl } = JSON.parse(line.slice("WXRIBAO_QR:".length));
+            if (imageUrl) showQr(imageUrl);
+          } catch {
+            /* ignore */
+          }
+        } else if (line.startsWith("WXRIBAO_RESULT:")) {
+          try {
+            const r = JSON.parse(line.slice("WXRIBAO_RESULT:".length));
+            resultReceived = true;
+            finishWith(r.status, r.data, r.message);
+          } catch {
+            /* ignore */
+          }
+        } else if (line.trim()) {
+          // 其它原始输出（如 Python 报错）直接展示，便于排查本地环境问题
+          setLogs((prev) => [...prev, line]);
+        }
+      });
+      unlistenRef.current = unlisten;
+
+      setLogs(["▶ 正在启动本地脚本..."]);
+
+      try {
+        await invoke("run_wx_ribao", {
+          params: {
+            startDate: formData.startDate,
+            endDate: formData.endDate,
+            outputFormat: formData.outputFormat,
+            indentInTheLine: formData.indentInTheLine ? "true" : "false",
+          },
+        });
+        if (!cancelledRef.current && !resultReceived) {
+          showError(
+            "本地脚本已退出但未返回结果，请确认已安装 Python 及 playwright，并已安装 Edge/Chrome 或执行 playwright install chromium"
+          );
+        }
+      } catch (err) {
+        if (cancelledRef.current) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setLogs((prev) => [...prev, `✖ 本地脚本异常: ${msg}`]);
+        showError(msg);
+      } finally {
+        unlistenRef.current?.();
+        unlistenRef.current = null;
+        setLoading(false);
+      }
+    },
+    [appendLogEntries, showQr, finishWith, showError]
+  );
 
   const handleFormSubmit = async (formData: WxRibaoFormData) => {
-    if (cancelledRef.current === false && loading) return;
+    if (loading) return;
 
     if (abortRef.current) {
       abortRef.current.abort();
@@ -257,6 +359,7 @@ export default function Kuaishou() {
     const ac = new AbortController();
     abortRef.current = ac;
 
+    // 复位公共状态
     setLogs([]);
     setLoading(true);
     cancelledRef.current = false;
@@ -265,8 +368,14 @@ export default function Kuaishou() {
     lastLogCountRef.current = 0;
     qrShownRef.current = false;
 
-    setLogs(["▶ 正在请求服务器..."]);
+    // 本地脚本模式
+    if (mode === "local") {
+      await runLocal(formData);
+      return;
+    }
 
+    // 远程接口模式
+    setLogs(["▶ 正在请求服务器..."]);
     try {
       const result = await getWxRibao({
         startDate: formData.startDate,
@@ -309,6 +418,31 @@ export default function Kuaishou() {
         }
       >
         <div className="min-w-0">
+          {/* 获取方式切换：远程接口 / 本地脚本 */}
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">获取方式</span>
+            <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
+              <ModeButton
+                active={mode === "remote"}
+                onClick={() => setMode("remote")}
+                disabled={loading}
+                icon={<Cloud className="size-3.5" />}
+                label="远程接口"
+              />
+              <ModeButton
+                active={mode === "local"}
+                onClick={() => setMode("local")}
+                disabled={loading}
+                icon={<HardDrive className="size-3.5" />}
+                label="本地脚本"
+              />
+            </div>
+            <span className="text-[11px] text-muted-foreground/70">
+              {mode === "remote"
+                ? "调用后端服务（默认）"
+                : "服务器不可用时的兜底，需本机已装 Python 及 playwright（优先复用系统 Edge/Chrome）"}
+            </span>
+          </div>
           <KuaishouCard onSubmit={handleFormSubmit} onCancel={cancelAll} loading={loading} />
         </div>
         <div className="flex flex-col min-h-0 min-w-0">
@@ -660,5 +794,35 @@ export default function Kuaishou() {
         })()}
       </AnimatePresence>
     </div>
+  );
+}
+
+function ModeButton({
+  active,
+  onClick,
+  disabled,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+        active
+          ? "bg-primary text-primary-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

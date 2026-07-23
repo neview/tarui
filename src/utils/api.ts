@@ -47,21 +47,11 @@ export interface HealthResponse {
   status: string;
 }
 
-export interface CaptureQrResponse {
-  success: boolean;
-  qr_code?: string;
-  error?: string;
-}
-
 export async function releaseVersion(
   params: ReleaseVersionParams
 ): Promise<ReleaseVersionResponse> {
   return alovaInstance.Post<ReleaseVersionResponse>("/api/release-version", params);
 }
-
-export const captureQr = () => {
-  return alovaInstance.Post<CaptureQrResponse>("/api/capture-qr");
-};
 
 export const getWxRibao = (params: WxRibaoParams) => {
   return alovaInstance.Post<WxRibaoResponse>("/api/wx-ribao", params);

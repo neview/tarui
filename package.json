@@ -4,8 +4,9 @@
   "version": "1.5.5",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "sync:scripts": "node scripts/sync-scripts.mjs",
+    "dev": "node scripts/sync-scripts.mjs && vite",
+    "build": "node scripts/sync-scripts.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

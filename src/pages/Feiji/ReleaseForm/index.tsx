@@ -213,6 +213,7 @@ export function ReleaseForm({ onSubmit, loading }: ReleaseFormProps) {
           <Input
             id="appid"
             name="appid"
+            defaultValue='["2","61"]'
             placeholder='JSON格式，如 ["wx123456789"]'
             className={errors.appid ? "border-red-500" : ""}
           />
