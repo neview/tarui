@@ -7,9 +7,14 @@ import { ReleaseFormData } from "./ReleaseForm";
 import { releaseVersion, type ReleaseVersionResponse } from "@/utils/api";
 import { Alert, useAlert } from "@/components/ui/alert";
 import { AnimatedList } from "@/components/ui/animated-list";
+import { OperationLogButton } from "@/components/OperationLog";
+import { logOperation } from "@/utils/operationLog";
 import styles from "./index.module.scss";
 
 type ReleaseMode = "remote" | "local";
+
+const LOG_PAGE = "feiji";
+const LOG_PAGE_LABEL = "发布微信小程序版本";
 
 export default function Feiji() {
   const { alert, showSuccess, showError, closeAlert } = useAlert();
@@ -21,6 +26,14 @@ export default function Feiji() {
     // 清空之前的日志
     setLogs([]);
     setLoading(true);
+
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「发布版本」",
+      status: "info",
+      detail: `方式=${mode === "local" ? "本地脚本" : "远程接口"}，版本=${data.version || "-"}，名称=${data.name || "-"}`,
+    });
 
     // 本地脚本模式：监听 release-log 事件，实时把每一行日志追加显示
     let unlisten: (() => void) | undefined;
@@ -44,8 +57,22 @@ export default function Feiji() {
       // 始终显示 message，根据 code 判断成功或失败
       if (result.code === 1) {
         showSuccess(result.message);
+        logOperation({
+          page: LOG_PAGE,
+          pageLabel: LOG_PAGE_LABEL,
+          action: "发布版本",
+          status: "success",
+          detail: result.message,
+        });
       } else {
         showError(result.message);
+        logOperation({
+          page: LOG_PAGE,
+          pageLabel: LOG_PAGE_LABEL,
+          action: "发布版本",
+          status: "error",
+          detail: result.message,
+        });
       }
 
       // 远程模式一次性设置日志（后端返回完整 log）；
@@ -54,7 +81,15 @@ export default function Feiji() {
         setLogs(result.log);
       }
     } catch (error) {
-      showError(error instanceof Error ? error.message : "请求失败，请稍后重试");
+      const msg = error instanceof Error ? error.message : "请求失败，请稍后重试";
+      showError(msg);
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "发布版本",
+        status: "error",
+        detail: msg,
+      });
     } finally {
       unlisten?.();
       setLoading(false);
@@ -94,7 +129,11 @@ export default function Feiji() {
           <ReleaseCard onSubmit={handleFormSubmit} loading={loading} />
         </div>
         <div className="flex-1">
-          <AnimatedList logs={logs} title="执行日志" />
+          <AnimatedList
+            logs={logs}
+            title="执行日志"
+            action={<OperationLogButton page={LOG_PAGE} pageLabel={LOG_PAGE_LABEL} />}
+          />
         </div>
       </div>
     </div>

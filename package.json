@@ -1,7 +1,7 @@
 {
   "name": "Scripts",
   "private": true,
-  "version": "1.5.7",
+  "version": "1.5.8",
   "type": "module",
   "scripts": {
     "sync:scripts": "node scripts/sync-scripts.mjs",

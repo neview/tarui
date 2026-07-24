@@ -7,10 +7,15 @@ import { WxRibaoFormData } from "./KuaishouForm";
 import { Alert, useAlert } from "@/components/ui/alert";
 import { ScrollText, Copy, Check, Loader2, AlertCircle, Cloud, HardDrive } from "lucide-react";
 import { Meteors } from "@/components/ui/meteors";
+import { OperationLogButton } from "@/components/OperationLog";
+import { logOperation } from "@/utils/operationLog";
 import { getWxRibao, getWxRibaoStatus, cancelWxRibao } from "@/utils/api";
 import styles from "./index.module.scss";
 
 type RibaoMode = "remote" | "local";
+
+const LOG_PAGE = "kuaishou";
+const LOG_PAGE_LABEL = "微信日报";
 
 const QR_TOTAL_SECONDS = 120;
 
@@ -193,18 +198,46 @@ export default function Kuaishou() {
             setLogs((prev) => [...prev, "───────────────────", ...lines]);
           }
           showSuccess("日报获取完成");
+          logOperation({
+            page: LOG_PAGE,
+            pageLabel: LOG_PAGE_LABEL,
+            action: "获取日报",
+            status: "success",
+            detail: "日报获取完成",
+          });
           break;
         case "expired":
           setQrStatus("⏰ 二维码已过期，请重新获取");
           showError(message || "二维码已过期");
+          logOperation({
+            page: LOG_PAGE,
+            pageLabel: LOG_PAGE_LABEL,
+            action: "获取日报",
+            status: "error",
+            detail: message || "二维码已过期",
+          });
           break;
         case "error":
           closeQrModal();
           showError(message || "执行过程出错");
+          logOperation({
+            page: LOG_PAGE,
+            pageLabel: LOG_PAGE_LABEL,
+            action: "获取日报",
+            status: "error",
+            detail: message || "执行过程出错",
+          });
           break;
         case "cancelled":
           closeQrModal();
           setLogs((prev) => [...prev, "⏹ 任务已被取消"]);
+          logOperation({
+            page: LOG_PAGE,
+            pageLabel: LOG_PAGE_LABEL,
+            action: "获取日报",
+            status: "info",
+            detail: "任务已被取消",
+          });
           break;
       }
     },
@@ -212,6 +245,13 @@ export default function Kuaishou() {
   );
 
   const cancelAll = useCallback(() => {
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「取消执行」",
+      status: "info",
+      detail: "用户主动取消日报获取任务",
+    });
     cancelledRef.current = true;
     if (abortRef.current) {
       abortRef.current.abort();
@@ -332,15 +372,29 @@ export default function Kuaishou() {
           },
         });
         if (!cancelledRef.current && !resultReceived) {
-          showError(
-            "本地脚本已退出但未返回结果，请确认已安装 Python 及 playwright，并已安装 Edge/Chrome 或执行 playwright install chromium"
-          );
+          const msg =
+            "本地脚本已退出但未返回结果，请确认已安装 Python 及 playwright，并已安装 Edge/Chrome 或执行 playwright install chromium";
+          showError(msg);
+          logOperation({
+            page: LOG_PAGE,
+            pageLabel: LOG_PAGE_LABEL,
+            action: "获取日报",
+            status: "error",
+            detail: msg,
+          });
         }
       } catch (err) {
         if (cancelledRef.current) return;
         const msg = err instanceof Error ? err.message : String(err);
         setLogs((prev) => [...prev, `✖ 本地脚本异常: ${msg}`]);
         showError(msg);
+        logOperation({
+          page: LOG_PAGE,
+          pageLabel: LOG_PAGE_LABEL,
+          action: "获取日报",
+          status: "error",
+          detail: `本地脚本异常: ${msg}`,
+        });
       } finally {
         unlistenRef.current?.();
         unlistenRef.current = null;
@@ -352,6 +406,14 @@ export default function Kuaishou() {
 
   const handleFormSubmit = async (formData: WxRibaoFormData) => {
     if (loading) return;
+
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「获取日报」",
+      status: "info",
+      detail: `方式=${mode === "local" ? "本地脚本" : "远程接口"}，日期=${formData.startDate || "-"} ~ ${formData.endDate || "-"}`,
+    });
 
     if (abortRef.current) {
       abortRef.current.abort();
@@ -390,6 +452,13 @@ export default function Kuaishou() {
       if (!result.sessionId) {
         setLogs((prev) => [...prev, "✖ 服务器未返回 sessionId"]);
         showError("服务器未返回有效的会话ID");
+        logOperation({
+          page: LOG_PAGE,
+          pageLabel: LOG_PAGE_LABEL,
+          action: "获取日报",
+          status: "error",
+          detail: "服务器未返回有效的会话ID",
+        });
         setLoading(false);
         return;
       }
@@ -402,6 +471,13 @@ export default function Kuaishou() {
       const msg = err instanceof Error ? err.message : String(err);
       setLogs((prev) => [...prev, `✖ 请求异常: ${msg}`]);
       showError(msg);
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "获取日报",
+        status: "error",
+        detail: `请求异常: ${msg}`,
+      });
       setLoading(false);
     }
   };
@@ -454,6 +530,7 @@ export default function Kuaishou() {
                 {loading && (
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
                 )}
+                <OperationLogButton page={LOG_PAGE} pageLabel={LOG_PAGE_LABEL} className="ml-1" />
               </div>
               {logs.length > 0 && (() => {
                 const sepIdx = logs.lastIndexOf("───────────────────");

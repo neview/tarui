@@ -1042,6 +1042,132 @@ async fn read_text_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("读取文件失败: {} ({})", path, e))
 }
 
+// ==================== 操作日志落盘（写入安装根目录 / exe 同级目录） ====================
+
+/// 前端上报的一条操作日志（time 为前端已按本地时区格式化好的字符串）。
+#[derive(serde::Deserialize)]
+struct OperationLogRecord {
+    time: String,
+    #[serde(rename = "pageLabel")]
+    page_label: String,
+    action: String,
+    status: String,
+    #[serde(default)]
+    detail: String,
+}
+
+/// 操作日志文件路径。
+/// 若传入自定义目录 `dir` 则写到该目录，否则默认与 exe 同级（安装后即“安装根目录”）。
+fn operation_log_file(dir: Option<&str>) -> Result<std::path::PathBuf, String> {
+    let base = match dir {
+        Some(d) if !d.trim().is_empty() => std::path::PathBuf::from(d),
+        _ => {
+            let exe =
+                std::env::current_exe().map_err(|e| format!("无法获取 exe 路径: {}", e))?;
+            exe.parent()
+                .ok_or("无法获取 exe 所在目录")?
+                .to_path_buf()
+        }
+    };
+    Ok(base.join("operation-logs.log"))
+}
+
+/// 追加写入一条操作日志到磁盘，返回日志文件的绝对路径。
+/// `dir` 为可选的自定义目录，不传则写到安装根目录。
+#[tauri::command]
+fn append_operation_log(record: OperationLogRecord, dir: Option<String>) -> Result<String, String> {
+    use std::io::Write;
+    let path = operation_log_file(dir.as_deref())?;
+    // 确保目标目录存在（自定义目录可能尚未创建）
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("无法创建日志目录 {}: {}", parent.display(), e))?;
+    }
+    let status_text = match record.status.as_str() {
+        "success" => "成功",
+        "error" => "失败",
+        _ => "信息",
+    };
+    let detail = if record.detail.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" -> {}", record.detail)
+    };
+    let line = format!(
+        "[{}] [{}] [{}] {}{}\n",
+        record.time, record.page_label, status_text, record.action, detail
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("无法打开日志文件 {}: {}", path.display(), e))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| format!("写入日志失败: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// 获取操作日志文件路径（供前端展示）。
+#[tauri::command]
+fn get_operation_log_path(dir: Option<String>) -> Result<String, String> {
+    Ok(operation_log_file(dir.as_deref())?
+        .to_string_lossy()
+        .to_string())
+}
+
+/// 清空磁盘上的操作日志文件。
+#[tauri::command]
+fn clear_operation_log_file(dir: Option<String>) -> Result<(), String> {
+    let path = operation_log_file(dir.as_deref())?;
+    if path.exists() {
+        std::fs::write(&path, b"")
+            .map_err(|e| format!("清空日志文件失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// 在系统文件管理器中定位日志文件（Windows 用资源管理器选中该文件）。
+#[tauri::command]
+fn reveal_operation_log(dir: Option<String>) -> Result<(), String> {
+    let path = operation_log_file(dir.as_deref())?;
+    #[cfg(target_os = "windows")]
+    {
+        let arg = if path.exists() {
+            format!("/select,{}", path.display())
+        } else {
+            path.parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| path.display().to_string())
+        };
+        std::process::Command::new("explorer")
+            .arg(arg)
+            .spawn()
+            .map_err(|e| format!("打开资源管理器失败: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let target = if path.exists() {
+            path.clone()
+        } else {
+            path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone())
+        };
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("打开访达失败: {}", e))?;
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone());
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("打开文件管理器失败: {}", e))?;
+    }
+    Ok(())
+}
+
 // ==================== SSH 远程命令执行 ====================
 
 #[derive(serde::Deserialize)]
@@ -1839,6 +1965,10 @@ pub fn run() {
             run_build_and_deploy,
             cancel_deploy,
             read_text_file,
+            append_operation_log,
+            get_operation_log_path,
+            clear_operation_log_file,
+            reveal_operation_log,
             execute_ssh_commands,
             test_ssh_connection,
             check_git_status,

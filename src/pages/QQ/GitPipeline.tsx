@@ -30,6 +30,11 @@ import {
   ChevronRight,
   GripVertical,
 } from "lucide-react";
+import { OperationLogButton } from "@/components/OperationLog";
+import { logOperation } from "@/utils/operationLog";
+
+const LOG_PAGE = "qq";
+const LOG_PAGE_LABEL = "Git 一键提交";
 
 // ==================== Types ====================
 
@@ -1816,12 +1821,26 @@ export default function GitPipeline() {
         return Array.from(set);
       });
       pushToast(`已添加 ${list.length} 个目录`, "success");
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "点击「添加目录」",
+        status: "success",
+        detail: `已添加 ${list.length} 个目录`,
+      });
       // 添加完自动检测
       setTimeout(() => {
         void runCheckFor(list);
       }, 50);
     } catch (e) {
       pushToast(`添加目录失败: ${e}`, "error");
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "点击「添加目录」",
+        status: "error",
+        detail: `添加目录失败: ${e}`,
+      });
     }
   };
 
@@ -1907,6 +1926,13 @@ export default function GitPipeline() {
     }
     await runCheckFor(targets);
     pushToast(`已检测 ${targets.length} 个目录`, "success");
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「全部检测」",
+      status: "success",
+      detail: `已检测 ${targets.length} 个目录`,
+    });
   };
 
   /** 为一组仓库顺序执行 pipeline（每个仓库用独立 sessionId + 独立监听） */
@@ -2007,15 +2033,36 @@ export default function GitPipeline() {
             },
           });
           if (!opts.silent) pushToast(`「${repoName}」执行完成`, "success");
+          logOperation({
+            page: LOG_PAGE,
+            pageLabel: LOG_PAGE_LABEL,
+            action: `一键提交 · ${repoName}`,
+            status: "success",
+            detail: `预设「${preset.name}」执行完成，提交备注：${msg || "-"}`,
+          });
         } catch (e) {
           const msgText = String(e);
           if (msgText.includes("已取消")) {
             cancelled = true;
             appendLog(repo, "✗ 已取消");
             pushToast(`「${repoName}」已取消`, "info");
+            logOperation({
+              page: LOG_PAGE,
+              pageLabel: LOG_PAGE_LABEL,
+              action: `一键提交 · ${repoName}`,
+              status: "info",
+              detail: "任务已取消",
+            });
           } else {
             appendLog(repo, `✗ 失败: ${msgText}`);
             if (!opts.silent) pushToast(`「${repoName}」执行失败`, "error");
+            logOperation({
+              page: LOG_PAGE,
+              pageLabel: LOG_PAGE_LABEL,
+              action: `一键提交 · ${repoName}`,
+              status: "error",
+              detail: `执行失败: ${msgText}`,
+            });
           }
         } finally {
           unlisten();
@@ -2052,17 +2099,38 @@ export default function GitPipeline() {
     if (runningRepos.has(path)) return;
     // 记录最近使用的备注
     updateRepoMeta(path, { lastMessage: getMessage(path) });
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「一键提交」",
+      status: "info",
+      detail: `项目：${getRepoName(path)}`,
+    });
     void runPipelineFor([path]);
   };
 
   const handleCancelOne = async (path: string) => {
     const sid = repoSessions[path];
     if (!sid) return;
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「取消」",
+      status: "info",
+      detail: `项目：${getRepoName(path)}`,
+    });
     try {
       await invoke("cancel_git_pipeline", { sessionId: sid });
       pushToast(`「${getRepoName(path)}」已请求取消`, "info");
     } catch (e) {
       pushToast(`取消失败: ${e}`, "error");
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "取消任务",
+        status: "error",
+        detail: `取消失败: ${e}`,
+      });
     }
   };
 
@@ -2072,11 +2140,25 @@ export default function GitPipeline() {
       pushToast("请先勾选至少一个目录", "info");
       return;
     }
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「批量提交」",
+      status: "info",
+      detail: `共 ${targets.length} 个仓库：${targets.map((t) => getRepoName(t)).join("、")}`,
+    });
     setBatchRunning(true);
     batchSessionRef.current = genId();
     try {
       await runPipelineFor(targets, { silent: true });
       pushToast(`批量任务完成（${targets.length} 个仓库）`, "success");
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "批量提交",
+        status: "success",
+        detail: `批量任务完成（${targets.length} 个仓库）`,
+      });
     } finally {
       setBatchRunning(false);
       batchSessionRef.current = "";
@@ -2094,11 +2176,25 @@ export default function GitPipeline() {
       }
     }
     pushToast("已请求取消所有任务", "info");
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「批量取消」",
+      status: "info",
+      detail: `已请求取消 ${sessions.length} 个任务`,
+    });
   };
 
   const handleClearAllLogs = () => {
     setRepoLogs({});
     pushToast("已清空所有日志", "info");
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「清空日志」",
+      status: "info",
+      detail: "清空所有执行日志面板",
+    });
   };
 
   // 统计
@@ -2235,6 +2331,7 @@ export default function GitPipeline() {
             >
               <Settings2 size={12} />
             </button>
+            <OperationLogButton page={LOG_PAGE} pageLabel={LOG_PAGE_LABEL} className="h-7" />
             <button
               type="button"
               onClick={() => setChromeCollapsed((v) => !v)}

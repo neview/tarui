@@ -6,6 +6,8 @@ import { Alert, useAlert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { OperationLogButton } from "@/components/OperationLog";
+import { logOperation } from "@/utils/operationLog";
 import {
   FolderOpen,
   Rocket,
@@ -57,6 +59,9 @@ const ENVIRONMENTS = [
 ] as const;
 
 const STORAGE_KEY = "weixin-deploy-config-v2";
+
+const LOG_PAGE = "weixin";
+const LOG_PAGE_LABEL = "微信部署";
 
 function defaultEnvConfig(): EnvConfig {
   return { buildCommand: "npm run build", cosRegion: "", cosBucket: "", cdnDomain: "" };
@@ -210,16 +215,36 @@ export default function Weixin() {
     const projectDir = g[dirField] as string;
     const projectLabel = PROJECT_GROUPS.find((p) => p.key === projectKey)?.label ?? projectKey;
     const envLabel = ENVIRONMENTS.find((e) => e.key === envKey)?.label ?? envKey;
+    const deployTarget = `${projectLabel} · ${envLabel}`;
+
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「部署」",
+      status: "info",
+      detail: deployTarget,
+    });
+
+    const failValidation = (msg: string) => {
+      showError(msg);
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: `部署 ${deployTarget}`,
+        status: "error",
+        detail: `校验未通过：${msg}`,
+      });
+    };
 
     if (!env.buildCommand && !env.cosRegion && !env.cosBucket) {
-      showError(`「${projectLabel} - ${envLabel}」的 Build 命令、COS Region、COS Bucket 均未配置，无法执行部署`);
+      failValidation(`「${projectLabel} - ${envLabel}」的 Build 命令、COS Region、COS Bucket 均未配置，无法执行部署`);
       return;
     }
-    if (!projectDir) { showError(`请先在全局配置中设置「${projectLabel}」的项目目录`); return; }
-    if (!g.secretId || !g.secretKey) { showError("请先在全局配置中填写 SecretId / SecretKey"); return; }
-    if (!env.buildCommand) { showError(`请填写「${projectLabel} - ${envLabel}」的 Build 命令`); return; }
-    if (!env.cosRegion) { showError(`请填写「${projectLabel} - ${envLabel}」的 COS Region`); return; }
-    if (!env.cosBucket) { showError(`请填写「${projectLabel} - ${envLabel}」的 COS Bucket`); return; }
+    if (!projectDir) { failValidation(`请先在全局配置中设置「${projectLabel}」的项目目录`); return; }
+    if (!g.secretId || !g.secretKey) { failValidation("请先在全局配置中填写 SecretId / SecretKey"); return; }
+    if (!env.buildCommand) { failValidation(`请填写「${projectLabel} - ${envLabel}」的 Build 命令`); return; }
+    if (!env.cosRegion) { failValidation(`请填写「${projectLabel} - ${envLabel}」的 COS Region`); return; }
+    if (!env.cosBucket) { failValidation(`请填写「${projectLabel} - ${envLabel}」的 COS Bucket`); return; }
 
     const compositeKey = `${projectKey}-${envKey}`;
     const deployId = `${compositeKey}-${++deployCounter}`;
@@ -270,6 +295,13 @@ export default function Weixin() {
       );
       setStatusMap((prev) => ({ ...prev, [compositeKey]: "success" }));
       showSuccess(`${projectLabel} · ${envLabel} 部署完成！`);
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: `部署 ${deployTarget}`,
+        status: "success",
+        detail: "部署完成",
+      });
     } catch (err) {
       if (cancelledIdsRef.current.has(deployId)) {
         cancelledIdsRef.current.delete(deployId);
@@ -280,6 +312,13 @@ export default function Weixin() {
       );
       setStatusMap((prev) => ({ ...prev, [compositeKey]: "error" }));
       showError(String(err));
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: `部署 ${deployTarget}`,
+        status: "error",
+        detail: `部署失败：${String(err)}`,
+      });
     } finally {
       unlisten();
     }
@@ -302,6 +341,13 @@ export default function Weixin() {
 
       if (!imported.global || !imported.projects) {
         showError("JSON 格式不正确，缺少 global 或 projects 字段");
+        logOperation({
+          page: LOG_PAGE,
+          pageLabel: LOG_PAGE_LABEL,
+          action: "点击「导入配置」",
+          status: "error",
+          detail: "JSON 格式不正确，缺少 global 或 projects 字段",
+        });
         return;
       }
 
@@ -334,8 +380,22 @@ export default function Weixin() {
 
       setConfig(merged);
       showSuccess("配置导入成功！");
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "点击「导入配置」",
+        status: "success",
+        detail: "配置导入成功",
+      });
     } catch (err) {
       showError(`导入失败: ${err}`);
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "点击「导入配置」",
+        status: "error",
+        detail: `导入失败: ${err}`,
+      });
     }
   };
 
@@ -344,6 +404,11 @@ export default function Weixin() {
       <Alert alert={alert} onClose={closeAlert} />
 
       <div className="relative z-10 flex flex-col gap-3 mx-auto max-w-[880px]">
+
+        {/* ===== 顶部工具栏 ===== */}
+        <div className="flex items-center justify-end">
+          <OperationLogButton page={LOG_PAGE} pageLabel={LOG_PAGE_LABEL} />
+        </div>
 
         {/* ===== Global Config (Collapsible) ===== */}
         <GlassCard>
@@ -450,7 +515,16 @@ export default function Weixin() {
               <Button
                 variant="ghost"
                 size="icon-xs"
-                onClick={() => setSessions([])}
+                onClick={() => {
+                  setSessions([]);
+                  logOperation({
+                    page: LOG_PAGE,
+                    pageLabel: LOG_PAGE_LABEL,
+                    action: "点击「清空全部日志」",
+                    status: "info",
+                    detail: "清空部署日志面板",
+                  });
+                }}
                 title="清空全部日志"
               >
                 <Eraser className="size-3.5" />

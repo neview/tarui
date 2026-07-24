@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Terminal } from "lucide-react";
 
@@ -8,12 +8,15 @@ interface AnimatedListProps {
   title?: string;
   /** 是否在新增日志时自动滚动（最新在顶部，这里滚动到顶部） */
   autoScroll?: boolean;
+  /** 标题右侧的操作区（如按钮），显示在数量之后 */
+  action?: ReactNode;
 }
 
 export function AnimatedList({
   logs,
   title = "执行日志",
   autoScroll = true,
+  action,
 }: AnimatedListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -34,6 +37,7 @@ export function AnimatedList({
         <Terminal className="w-4 h-4 text-muted-foreground" />
         <span className="text-sm font-medium text-muted-foreground">{title}</span>
         <span className="text-xs text-muted-foreground/60">({logs.length})</span>
+        {action && <div className="ml-2 flex items-center">{action}</div>}
       </div>
 
       <div
