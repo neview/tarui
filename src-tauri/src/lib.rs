@@ -1042,6 +1042,17 @@ async fn read_text_file(path: String) -> Result<String, String> {
         .map_err(|e| format!("读取文件失败: {} ({})", path, e))
 }
 
+#[tauri::command]
+async fn write_text_file(path: String, content: String) -> Result<(), String> {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建目录失败: {} ({})", parent.display(), e))?;
+        }
+    }
+    std::fs::write(&path, content).map_err(|e| format!("写入文件失败: {} ({})", path, e))
+}
+
 // ==================== 操作日志落盘（写入安装根目录 / exe 同级目录） ====================
 
 /// 前端上报的一条操作日志（time 为前端已按本地时区格式化好的字符串）。
@@ -1458,149 +1469,406 @@ fn parse_porcelain_line(line: &str) -> Option<ChangedFile> {
     })
 }
 
-#[tauri::command]
-async fn check_git_status(paths: Vec<String>) -> Result<Vec<GitStatus>, String> {
-    let handle = tokio::task::spawn_blocking(move || {
-        let mut results = Vec::new();
-        for p in paths {
-            let path = std::path::PathBuf::from(&p);
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
+/// 并行采集 git 状态时的最大工作线程数
+const GIT_STATUS_WORKERS: usize = 8;
 
-            if !path.is_dir() {
-                results.push(GitStatus {
-                    path: p.clone(),
-                    name,
-                    is_repo: false,
-                    branch: None,
-                    remote: None,
-                    ahead: 0,
-                    behind: 0,
-                    modified: 0,
-                    added: 0,
-                    deleted: 0,
-                    renamed: 0,
-                    untracked: 0,
-                    conflicted: 0,
-                    files: vec![],
-                    error: Some("目录不存在".to_string()),
-                });
-                continue;
+fn empty_git_status(path: String, name: String, error: Option<String>) -> GitStatus {
+    GitStatus {
+        path,
+        name,
+        is_repo: false,
+        branch: None,
+        remote: None,
+        ahead: 0,
+        behind: 0,
+        modified: 0,
+        added: 0,
+        deleted: 0,
+        renamed: 0,
+        untracked: 0,
+        conflicted: 0,
+        files: vec![],
+        error,
+    }
+}
+
+fn git_change_total(s: &GitStatus) -> u32 {
+    s.modified + s.added + s.deleted + s.renamed + s.untracked + s.conflicted
+}
+
+/// 采集单个目录的 git 状态（阻塞式）
+fn collect_git_status(p: &str) -> GitStatus {
+    let path = std::path::PathBuf::from(p);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    if !path.is_dir() {
+        return empty_git_status(p.to_string(), name, Some("目录不存在".to_string()));
+    }
+
+    let is_repo = run_git_sync(&path, &["rev-parse", "--is-inside-work-tree"])
+        .map(|(c, s, _)| c == 0 && s.trim() == "true")
+        .unwrap_or(false);
+
+    if !is_repo {
+        return empty_git_status(p.to_string(), name, Some("不是 git 仓库".to_string()));
+    }
+
+    let branch = run_git_sync(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .filter(|(c, _, _)| *c == 0)
+        .map(|(_, s, _)| s.trim().to_string());
+
+    let remote = run_git_sync(&path, &["remote", "get-url", "origin"])
+        .ok()
+        .filter(|(c, _, _)| *c == 0)
+        .map(|(_, s, _)| s.trim().to_string());
+
+    // ahead / behind
+    let (mut ahead, mut behind) = (0u32, 0u32);
+    if let Ok((c, out, _)) = run_git_sync(
+        &path,
+        &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+    ) {
+        if c == 0 {
+            let parts: Vec<&str> = out.trim().split_whitespace().collect();
+            if parts.len() == 2 {
+                behind = parts[0].parse().unwrap_or(0);
+                ahead = parts[1].parse().unwrap_or(0);
             }
+        }
+    }
 
-            let is_repo = run_git_sync(&path, &["rev-parse", "--is-inside-work-tree"])
-                .map(|(c, s, _)| c == 0 && s.trim() == "true")
-                .unwrap_or(false);
-
-            if !is_repo {
-                results.push(GitStatus {
-                    path: p.clone(),
-                    name,
-                    is_repo: false,
-                    branch: None,
-                    remote: None,
-                    ahead: 0,
-                    behind: 0,
-                    modified: 0,
-                    added: 0,
-                    deleted: 0,
-                    renamed: 0,
-                    untracked: 0,
-                    conflicted: 0,
-                    files: vec![],
-                    error: Some("不是 git 仓库".to_string()),
-                });
-                continue;
-            }
-
-            let branch = run_git_sync(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
-                .ok()
-                .filter(|(c, _, _)| *c == 0)
-                .map(|(_, s, _)| s.trim().to_string());
-
-            let remote = run_git_sync(&path, &["remote", "get-url", "origin"])
-                .ok()
-                .filter(|(c, _, _)| *c == 0)
-                .map(|(_, s, _)| s.trim().to_string());
-
-            // ahead / behind
-            let (mut ahead, mut behind) = (0u32, 0u32);
-            if let Ok((c, out, _)) = run_git_sync(
-                &path,
-                &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
-            ) {
-                if c == 0 {
-                    let parts: Vec<&str> = out.trim().split_whitespace().collect();
-                    if parts.len() == 2 {
-                        behind = parts[0].parse().unwrap_or(0);
-                        ahead = parts[1].parse().unwrap_or(0);
-                    }
-                }
-            }
-
-            // 变更文件
-            let mut files: Vec<ChangedFile> = Vec::new();
-            let (mut modified, mut added, mut deleted, mut renamed, mut untracked, mut conflicted) =
-                (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
-            if let Ok((c, out, _)) = run_git_sync(
-                &path,
-                &[
-                    "-c",
-                    "core.quotepath=false",
-                    "status",
-                    "--porcelain=v1",
-                ],
-            ) {
-                if c == 0 {
-                    for line in out.lines() {
-                        if let Some(f) = parse_porcelain_line(line) {
-                            let s = f.status.as_bytes();
-                            if s == b"??" {
-                                untracked += 1;
-                            } else if s[0] == b'U' || s[1] == b'U' || s == b"AA" || s == b"DD" {
-                                conflicted += 1;
-                            } else {
-                                if matches!(s[0], b'A') || matches!(s[1], b'A') {
-                                    added += 1;
-                                } else if matches!(s[0], b'D') || matches!(s[1], b'D') {
-                                    deleted += 1;
-                                } else if matches!(s[0], b'R') || matches!(s[1], b'R') {
-                                    renamed += 1;
-                                } else if matches!(s[0], b'M') || matches!(s[1], b'M') {
-                                    modified += 1;
-                                }
-                            }
-                            files.push(f);
+    // 变更文件
+    let mut files: Vec<ChangedFile> = Vec::new();
+    let (mut modified, mut added, mut deleted, mut renamed, mut untracked, mut conflicted) =
+        (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+    if let Ok((c, out, _)) = run_git_sync(
+        &path,
+        &["-c", "core.quotepath=false", "status", "--porcelain=v1"],
+    ) {
+        if c == 0 {
+            for line in out.lines() {
+                if let Some(f) = parse_porcelain_line(line) {
+                    let s = f.status.as_bytes();
+                    if s == b"??" {
+                        untracked += 1;
+                    } else if s[0] == b'U' || s[1] == b'U' || s == b"AA" || s == b"DD" {
+                        conflicted += 1;
+                    } else {
+                        if matches!(s[0], b'A') || matches!(s[1], b'A') {
+                            added += 1;
+                        } else if matches!(s[0], b'D') || matches!(s[1], b'D') {
+                            deleted += 1;
+                        } else if matches!(s[0], b'R') || matches!(s[1], b'R') {
+                            renamed += 1;
+                        } else if matches!(s[0], b'M') || matches!(s[1], b'M') {
+                            modified += 1;
                         }
                     }
+                    files.push(f);
                 }
             }
+        }
+    }
 
-            results.push(GitStatus {
-                path: p.clone(),
-                name,
-                is_repo: true,
-                branch,
-                remote,
-                ahead,
-                behind,
-                modified,
-                added,
-                deleted,
-                renamed,
-                untracked,
-                conflicted,
-                files,
-                error: None,
+    GitStatus {
+        path: p.to_string(),
+        name,
+        is_repo: true,
+        branch,
+        remote,
+        ahead,
+        behind,
+        modified,
+        added,
+        deleted,
+        renamed,
+        untracked,
+        conflicted,
+        files,
+        error: None,
+    }
+}
+
+/// 多线程并行采集一批目录的 git 状态，返回顺序与输入一致
+fn collect_statuses_parallel(paths: &[String]) -> Vec<GitStatus> {
+    let total = paths.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let workers = std::cmp::min(GIT_STATUS_WORKERS, total);
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let slots: std::sync::Mutex<Vec<Option<GitStatus>>> = std::sync::Mutex::new(vec![None; total]);
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let i = cursor.fetch_add(1, Ordering::SeqCst);
+                if i >= total {
+                    break;
+                }
+                let st = collect_git_status(&paths[i]);
+                if let Ok(mut guard) = slots.lock() {
+                    guard[i] = Some(st);
+                }
             });
         }
-        results
     });
 
-    handle.await.map_err(|e| format!("任务执行失败: {}", e))
+    slots
+        .into_inner()
+        .map(|v| v.into_iter().flatten().collect())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn check_git_status(paths: Vec<String>) -> Result<Vec<GitStatus>, String> {
+    tokio::task::spawn_blocking(move || collect_statuses_parallel(&paths))
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))
+}
+
+// ==================== 目录扫描：批量发现 git 仓库 ====================
+
+const GIT_SCAN_DEFAULT_DEPTH: u32 = 3;
+const GIT_SCAN_MAX_REPOS: usize = 400;
+
+/// 扫描时直接跳过的目录名（依赖/构建产物等，内部不可能是独立项目仓库）
+const GIT_SCAN_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "bower_components",
+    "dist",
+    "build",
+    "target",
+    "out",
+    "output",
+    "coverage",
+    "vendor",
+    "__pycache__",
+    "venv",
+    "env",
+    "Pods",
+    "Library",
+    "AppData",
+];
+
+/// 被省略条目的上报上限，避免一次返回过多内容
+const GIT_SCAN_MAX_SKIPPED: usize = 600;
+
+/// 扫描过程中被省略（没有 git 关联）的条目
+#[derive(serde::Serialize, Clone)]
+struct SkippedEntry {
+    path: String,
+    name: String,
+    /// file = 文件；dir = 文件夹但没有 git；ignored = 依赖/产物/隐藏目录，直接跳过
+    kind: String,
+    reason: String,
+}
+
+struct ScanCtx {
+    repos: Vec<String>,
+    skipped: Vec<SkippedEntry>,
+    /// 省略条目总数（可能大于 skipped.len()，因为有上报上限）
+    skipped_total: u32,
+    max_depth: u32,
+    truncated: bool,
+    /// 前端维护的"跳过检测"清单，命中后既不进入结果也不再上报
+    skip: std::collections::HashSet<String>,
+}
+
+/// 统一路径写法便于比对：反斜杠转正斜杠，Windows 下忽略大小写
+fn normalize_scan_path(p: &str) -> String {
+    let s = p.replace('\\', "/");
+    let s = s.trim_end_matches('/').to_string();
+    if cfg!(target_os = "windows") {
+        s.to_lowercase()
+    } else {
+        s
+    }
+}
+
+impl ScanCtx {
+    fn record_skipped(&mut self, path: &std::path::Path, name: &str, kind: &str, reason: &str) {
+        self.skipped_total += 1;
+        if self.skipped.len() < GIT_SCAN_MAX_SKIPPED {
+            self.skipped.push(SkippedEntry {
+                path: path.to_string_lossy().to_string(),
+                name: name.to_string(),
+                kind: kind.to_string(),
+                reason: reason.to_string(),
+            });
+        }
+    }
+}
+
+/// 递归扫描目录，收集 git 仓库以及被省略的条目。
+/// - 目录内存在 `.git` 即视为仓库，且不再深入其内部（避免把子模块/内部目录当成独立项目）
+/// - 文件、隐藏目录、依赖/构建目录直接省略
+/// - 整棵子树都没有仓库时，只把这个子树的顶层目录记为一条省略项，不再逐个展开里面的内容
+///
+/// 返回该目录（含子树）是否包含 git 仓库。
+fn walk_git_repos(ctx: &mut ScanCtx, dir: &std::path::Path, depth: u32, limit: usize) -> bool {
+    if ctx.repos.len() >= limit {
+        ctx.truncated = true;
+        return false;
+    }
+
+    if dir.join(".git").exists() {
+        ctx.repos.push(dir.to_string_lossy().to_string());
+        return true;
+    }
+
+    if depth >= ctx.max_depth {
+        return false;
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+
+    // 本层的省略项先攒着：只有当这一层确实通往真实仓库时才上报，
+    // 否则整个子树会由上层合并成一条记录
+    let mut pending: Vec<(std::path::PathBuf, String, &'static str, &'static str)> = Vec::new();
+    let mut child_dirs: Vec<(std::path::PathBuf, String)> = Vec::new();
+
+    for entry in entries.flatten() {
+        let raw_name = entry.file_name();
+        let name = match raw_name.to_str() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let path = entry.path();
+
+        // 已被加入"跳过检测"的条目：既不遍历也不上报
+        if !ctx.skip.is_empty()
+            && ctx
+                .skip
+                .contains(&normalize_scan_path(&path.to_string_lossy()))
+        {
+            continue;
+        }
+
+        // file_type 不跟随符号链接，可天然避免软链接成环
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+
+        if !is_dir {
+            pending.push((path, name, "file", "文件，不是项目目录"));
+            continue;
+        }
+        if name.starts_with('.') {
+            pending.push((path, name, "ignored", "隐藏目录，已跳过"));
+            continue;
+        }
+        if GIT_SCAN_SKIP_DIRS.iter().any(|s| s.eq_ignore_ascii_case(&name)) {
+            pending.push((path, name, "ignored", "依赖 / 构建产物目录，已跳过"));
+            continue;
+        }
+        child_dirs.push((path, name));
+    }
+
+    let mut found_any = false;
+    for (path, name) in child_dirs {
+        if walk_git_repos(ctx, &path, depth + 1, limit) {
+            found_any = true;
+        } else {
+            pending.push((path, name, "dir", "文件夹，没有 git 关联"));
+        }
+    }
+
+    // 根目录始终上报，便于用户确认"这个目录里到底有什么被跳过了"
+    if found_any || depth == 0 {
+        for (path, name, kind, reason) in pending {
+            ctx.record_skipped(&path, &name, kind, reason);
+        }
+    }
+
+    found_any
+}
+
+#[derive(serde::Serialize)]
+struct GitScanResult {
+    /// 扫描发现的 git 仓库状态（按路径升序）
+    repos: Vec<GitStatus>,
+    /// 发现的 git 仓库总数
+    total: u32,
+    /// 其中存在工作区改动的仓库数
+    changed: u32,
+    /// 是否因为仓库数量上限而截断
+    truncated: bool,
+    /// 被省略的文件/无 git 文件夹（最多 600 条）
+    skipped: Vec<SkippedEntry>,
+    /// 被省略条目的实际总数
+    skipped_total: u32,
+}
+
+/// 扫描一个或多个根目录，找出其中所有 git 仓库并返回它们的状态。
+/// 非 git 的目录与文件不会出现在结果中，`skip_paths` 里的条目会被直接忽略。
+#[tauri::command]
+async fn scan_git_repos(
+    roots: Vec<String>,
+    max_depth: Option<u32>,
+    skip_paths: Option<Vec<String>>,
+) -> Result<GitScanResult, String> {
+    if roots.is_empty() {
+        return Err("请先选择要扫描的根目录".to_string());
+    }
+    let depth = max_depth.unwrap_or(GIT_SCAN_DEFAULT_DEPTH).clamp(1, 8);
+
+    tokio::task::spawn_blocking(move || {
+        let skip: std::collections::HashSet<String> = skip_paths
+            .unwrap_or_default()
+            .iter()
+            .map(|p| normalize_scan_path(p))
+            .collect();
+
+        let mut ctx = ScanCtx {
+            repos: Vec::new(),
+            skipped: Vec::new(),
+            skipped_total: 0,
+            max_depth: depth,
+            truncated: false,
+            skip,
+        };
+
+        for root in &roots {
+            let root_path = std::path::PathBuf::from(root);
+            if !root_path.is_dir() {
+                continue;
+            }
+            walk_git_repos(&mut ctx, &root_path, 0, GIT_SCAN_MAX_REPOS);
+        }
+
+        // 多个根目录可能相互嵌套，去重后再采集状态
+        let mut paths = ctx.repos;
+        paths.sort();
+        paths.dedup();
+
+        let mut skipped = ctx.skipped;
+        skipped.sort_by(|a, b| a.path.cmp(&b.path));
+
+        let repos = collect_statuses_parallel(&paths);
+        let total = repos.len() as u32;
+        let changed = repos
+            .iter()
+            .filter(|r| r.is_repo && git_change_total(r) > 0)
+            .count() as u32;
+
+        GitScanResult {
+            repos,
+            total,
+            changed,
+            truncated: ctx.truncated,
+            skipped,
+            skipped_total: ctx.skipped_total,
+        }
+    })
+    .await
+    .map_err(|e| format!("扫描任务执行失败: {}", e))
 }
 
 /// 简易 shell 风格命令解析：支持双/单引号 & 反斜杠转义
@@ -1965,6 +2233,7 @@ pub fn run() {
             run_build_and_deploy,
             cancel_deploy,
             read_text_file,
+            write_text_file,
             append_operation_log,
             get_operation_log_path,
             clear_operation_log_file,
@@ -1972,6 +2241,7 @@ pub fn run() {
             execute_ssh_commands,
             test_ssh_connection,
             check_git_status,
+            scan_git_repos,
             run_git_pipeline,
             cancel_git_pipeline
         ])

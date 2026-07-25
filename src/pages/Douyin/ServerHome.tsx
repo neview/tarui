@@ -24,6 +24,7 @@ import {
   Zap,
   Import,
   Download,
+  FileDown,
 } from "lucide-react";
 
 // ==================== Types ====================
@@ -70,6 +71,25 @@ const CARD_COLORS = [
   "from-[#99F6E4]/30 to-[#2DD4BF]/15",
 ];
 
+const CONFIG_TEMPLATE = [
+  {
+    name: "示例-密码登录",
+    host: "192.168.1.100",
+    port: 22,
+    username: "root",
+    authType: "password",
+    password: "在此填写密码",
+  },
+  {
+    name: "示例-密钥登录",
+    host: "192.168.1.101",
+    port: 22,
+    username: "ubuntu",
+    authType: "key",
+    keyPath: "C:/Users/you/.ssh/id_rsa",
+  },
+];
+
 let toastCounter = 0;
 
 // ==================== Helpers ====================
@@ -93,6 +113,16 @@ function genId() {
 
 function getColor(index: number) {
   return CARD_COLORS[index % CARD_COLORS.length];
+}
+
+function downloadJson(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ==================== Sub Components ====================
@@ -696,7 +726,7 @@ function ToastContainer({ toasts }: { toasts: ToastData[] }) {
   };
 
   return (
-    <div className="fixed bottom-24 right-6 z-[999] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-6 right-6 z-[999] flex flex-col gap-2 pointer-events-none">
       <AnimatePresence>
         {toasts.map((t) => (
           <motion.div
@@ -1230,21 +1260,20 @@ export default function ServerHome() {
       ...(s.authType === "password" ? { password: s.password || "" } : { keyPath: s.keyPath || "" }),
     }));
 
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "servers-config.json";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadJson("servers-config.json", exportData);
     showToast(`已导出 ${servers.length} 台服务器配置`, "success");
   }, [servers, showToast]);
+
+  const handleDownloadTemplate = useCallback(() => {
+    downloadJson("servers-config-template.json", CONFIG_TEMPLATE);
+    showToast("模板已下载，填写后可通过「导入」载入", "success");
+  }, [showToast]);
 
   return (
     <div className="relative h-full w-full bg-transparent">
       <div
         ref={scrollRef}
-        className="relative z-10 h-full overflow-y-auto px-5 pt-3 pb-20"
+        className="relative z-10 h-full overflow-y-auto px-5 pt-3 pb-6"
         style={{ scrollbarWidth: "thin" }}
       >
         {/* ===== Server Section (Collapsible) ===== */}
@@ -1297,6 +1326,18 @@ export default function ServerHome() {
             </motion.div>
 
             <div className="flex items-center gap-2">
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={handleDownloadTemplate}
+                title="下载配置文件模板，填写后可用「导入」载入"
+                className="px-3 py-1.5 rounded-xl text-xs font-medium text-gray-500 dark:text-white/60 bg-black/[0.03] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.10] hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-700 dark:hover:text-white/85 transition-all"
+              >
+                <span className="flex items-center gap-1.5">
+                  <FileDown size={13} />
+                  模板
+                </span>
+              </motion.button>
               {servers.length > 0 && (
                 <motion.button
                   whileHover={{ scale: 1.05 }}
@@ -1314,7 +1355,7 @@ export default function ServerHome() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleImportConfig}
-                  className="px-3 py-1.5 rounded-xl text-xs font-medium text-gray-600 dark:text-white/70 bg-black/[0.03] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.10] hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-800 dark:hover:text-white/90 transition-all"
+                className="px-3 py-1.5 rounded-xl text-xs font-medium text-gray-600 dark:text-white/70 bg-black/[0.03] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.10] hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-800 dark:hover:text-white/90 transition-all"
               >
                 <span className="flex items-center gap-1.5">
                   <Import size={13} />

@@ -7,6 +7,13 @@ import { AnimatePresence, motion, useDragControls, type PanInfo } from "motion/r
 import {
   FolderGit2,
   FolderPlus,
+  FolderSearch,
+  Folder,
+  FolderX,
+  FolderCheck,
+  Eye,
+  EyeOff,
+  File as FileIcon,
   RefreshCw,
   Square,
   Settings2,
@@ -82,6 +89,34 @@ interface GitStatus {
   error: string | null;
 }
 
+/** 扫描时被省略的条目（没有 git 关联的文件/文件夹） */
+interface SkippedEntry {
+  path: string;
+  name: string;
+  /** file = 文件；dir = 文件夹但没有 git；ignored = 依赖/产物/隐藏目录 */
+  kind: "file" | "dir" | "ignored";
+  reason: string;
+}
+
+/** 跳过检测清单里的条目 */
+type SkipKind = SkippedEntry["kind"] | "manual";
+
+interface SkipItem {
+  path: string;
+  name: string;
+  kind: SkipKind;
+  reason: string;
+}
+
+interface GitScanResult {
+  repos: GitStatus[];
+  total: number;
+  changed: number;
+  truncated: boolean;
+  skipped: SkippedEntry[];
+  skipped_total: number;
+}
+
 interface ToastData {
   id: number;
   message: string;
@@ -101,6 +136,15 @@ const REPOS_KEY = "douyin-git-repos-v1";
 const PIPELINE_KEY = "douyin-git-pipeline-v1";
 const REPO_META_KEY = "douyin-git-repo-meta-v1";
 const CHROME_COLLAPSED_KEY = "douyin-git-chrome-collapsed-v1";
+const SCAN_ROOT_KEY = "douyin-git-scan-root-v1";
+const SCAN_DEPTH_KEY = "douyin-git-scan-depth-v1";
+const SCANNED_REPOS_KEY = "douyin-git-scanned-repos-v1";
+const SKIP_LIST_KEY = "douyin-git-skip-list-v1";
+const STATUSES_KEY = "douyin-git-statuses-v1";
+const SECTIONS_OPEN_KEY = "douyin-git-sections-open-v1";
+
+const DEFAULT_SCAN_DEPTH = 3;
+const SCAN_DEPTH_OPTIONS = [1, 2, 3, 4, 5];
 
 let toastCounter = 0;
 const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -182,6 +226,71 @@ function loadRepos(): string[] {
 function saveRepos(repos: string[]) {
   localStorage.setItem(REPOS_KEY, JSON.stringify(repos));
 }
+
+function loadStringList(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStringList(key: string, list: string[]) {
+  localStorage.setItem(key, JSON.stringify(list));
+}
+
+function loadScanDepth(): number {
+  const n = Number(localStorage.getItem(SCAN_DEPTH_KEY));
+  return SCAN_DEPTH_OPTIONS.includes(n) ? n : DEFAULT_SCAN_DEPTH;
+}
+
+function loadSkipList(): SkipItem[] {
+  try {
+    const raw = localStorage.getItem(SKIP_LIST_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (x): x is SkipItem => !!x && typeof x.path === "string" && typeof x.kind === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function loadStatuses(): Record<string, GitStatus> {
+  try {
+    const raw = localStorage.getItem(STATUSES_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 工作区改动文件总数 */
+function changeCount(status?: GitStatus): number {
+  if (!status || !status.is_repo) return 0;
+  return (
+    status.modified +
+    status.added +
+    status.deleted +
+    status.renamed +
+    status.untracked +
+    status.conflicted
+  );
+}
+
+/** 由 git 状态推导该项目属于哪一栏 */
+function classifyRepo(status?: GitStatus): "dirty" | "clean" | "non-git" {
+  // 尚未检测过的项目先当作待处理，检测后再归类
+  if (!status) return "dirty";
+  if (!status.is_repo) return "non-git";
+  return changeCount(status) > 0 ? "dirty" : "clean";
+}
+
+const SKIP_REASON_MANUAL = "手动跳过检测";
 
 function loadConfig(): PipelineConfig {
   try {
@@ -556,6 +665,212 @@ function Select({
   );
 }
 
+// ==================== 折叠栏：工作区干净 / 跳过检测 ====================
+
+const SKIP_KIND_META: Record<
+  SkipKind,
+  { label: string; icon: React.ElementType; className: string }
+> = {
+  manual: {
+    label: "手动跳过",
+    icon: EyeOff,
+    className: "bg-violet-500/15 text-violet-600 dark:text-violet-300 border-violet-500/20",
+  },
+  dir: {
+    label: "文件夹",
+    icon: Folder,
+    className: "bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/20",
+  },
+  file: {
+    label: "文件",
+    icon: FileIcon,
+    className: "bg-sky-500/15 text-sky-600 dark:text-sky-300 border-sky-500/20",
+  },
+  ignored: {
+    label: "已忽略",
+    icon: FolderX,
+    className: "bg-slate-500/15 text-slate-600 dark:text-slate-300 border-slate-500/20",
+  },
+};
+
+const SKIP_KIND_ORDER: SkipKind[] = ["manual", "dir", "file", "ignored"];
+
+/** 可折叠的次级列表容器 */
+function CollapsibleSection({
+  icon: Icon,
+  title,
+  hint,
+  count,
+  accent,
+  open,
+  onToggle,
+  action,
+  children,
+}: {
+  icon: React.ElementType;
+  title: string;
+  hint?: string;
+  count: number;
+  accent: string;
+  open: boolean;
+  onToggle: () => void;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl bg-white/70 dark:bg-white/[0.04] backdrop-blur-xl border border-black/[0.08] dark:border-white/[0.10] overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex items-center gap-2.5 mr-auto min-w-0 text-left"
+        >
+          <div
+            className={`w-7 h-7 shrink-0 rounded-lg border flex items-center justify-center ${accent}`}
+          >
+            <Icon size={14} />
+          </div>
+          <span className="text-gray-800 dark:text-white/90 text-sm font-semibold shrink-0">
+            {title}
+          </span>
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-white/60 shrink-0">
+            {count}
+          </span>
+          {hint && (
+            <span className="text-[11px] text-gray-400 dark:text-white/40 truncate hidden sm:inline">
+              {hint}
+            </span>
+          )}
+        </button>
+        {action}
+        <button
+          type="button"
+          onClick={onToggle}
+          className="shrink-0 w-7 h-7 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.10] text-gray-600 dark:text-white/70 flex items-center justify-center"
+          title={open ? "收起" : "展开"}
+        >
+          <motion.span
+            initial={false}
+            animate={{ rotate: open ? 180 : 0 }}
+            transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
+            className="flex items-center justify-center"
+          >
+            <ChevronDown size={13} />
+          </motion.span>
+        </button>
+      </div>
+      <motion.div
+        initial={false}
+        animate={{ height: open ? "auto" : 0, opacity: open ? 1 : 0 }}
+        transition={{
+          height: { duration: 0.3, ease: [0.22, 1, 0.36, 1] },
+          opacity: { duration: 0.18, delay: open ? 0.06 : 0 },
+        }}
+        style={{ overflow: "hidden" }}
+      >
+        <div className="border-t border-black/[0.06] dark:border-white/[0.08] p-2 max-h-80 overflow-auto">
+          {children}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+/** 工作区干净的项目行 */
+function CleanRow({
+  path,
+  status,
+  checking,
+  onCheck,
+  onSkip,
+}: {
+  path: string;
+  status?: GitStatus;
+  checking: boolean;
+  onCheck: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <div className="group flex items-center gap-2.5 px-2.5 py-2 rounded-xl hover:bg-black/[0.03] dark:hover:bg-white/[0.04]">
+      <div className="w-7 h-7 shrink-0 rounded-lg border flex items-center justify-center bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/20">
+        <FolderCheck size={14} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium text-gray-800 dark:text-white/85 truncate">
+            {getRepoName(path)}
+          </span>
+          {status?.branch && (
+            <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/20">
+              <GitBranch size={9} />
+              {status.branch}
+            </span>
+          )}
+          {status && status.ahead > 0 && (
+            <span className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/20">
+              ↑{status.ahead} 待推送
+            </span>
+          )}
+        </div>
+        <div className="text-[10.5px] text-gray-400 dark:text-white/40 truncate" title={path}>
+          {path}
+        </div>
+      </div>
+      <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          type="button"
+          onClick={onCheck}
+          disabled={checking}
+          className="h-7 px-2 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-300 border border-sky-500/20 text-[11px] flex items-center gap-1 disabled:opacity-50"
+          title="重新检测该项目"
+        >
+          <RefreshCw size={11} className={checking ? "animate-spin" : undefined} />
+        </button>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="h-7 px-2 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.10] text-gray-600 dark:text-white/60 text-[11px] flex items-center gap-1"
+          title="加入跳过检测"
+        >
+          <EyeOff size={11} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 跳过检测清单里的行 */
+function SkipRow({ item, onRestore }: { item: SkipItem; onRestore: () => void }) {
+  const meta = SKIP_KIND_META[item.kind] ?? SKIP_KIND_META.ignored;
+  const Icon = meta.icon;
+  return (
+    <div className="group flex items-center gap-2.5 px-2.5 py-2 rounded-xl hover:bg-black/[0.03] dark:hover:bg-white/[0.04]">
+      <div className={`w-7 h-7 shrink-0 rounded-lg border flex items-center justify-center ${meta.className}`}>
+        <Icon size={14} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium text-gray-800 dark:text-white/85 truncate">
+          {item.name || getRepoName(item.path)}
+        </div>
+        <div className="text-[10.5px] text-gray-400 dark:text-white/40 truncate" title={item.path}>
+          {item.path}
+        </div>
+      </div>
+      <span className="shrink-0 text-[10.5px] text-gray-500 dark:text-white/50 hidden sm:inline">
+        {item.reason}
+      </span>
+      <button
+        type="button"
+        onClick={onRestore}
+        className="shrink-0 h-7 px-2 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] hover:bg-sky-500/15 text-gray-600 dark:text-white/60 hover:text-sky-600 dark:hover:text-sky-300 text-[11px] flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+        title="恢复检测：下次检测会重新纳入"
+      >
+        <Eye size={11} /> 恢复
+      </button>
+    </div>
+  );
+}
+
 // ==================== Draggable Repo Card（长按触发拖拽排序，兼容 Grid 布局） ====================
 
 const LONG_PRESS_MS = 320;
@@ -731,7 +1046,8 @@ function DraggableRepoCard({ value, allValues, onReorder, ...cardProps }: Dragga
   return (
     <motion.div
       data-repo-path={value}
-      layout
+      // 只动位置：网格行高变化时不去动画宽高，避免留下空白格子
+      layout="position"
       drag={isDragging ? true : false}
       dragControls={dragControls}
       dragListener={false}
@@ -780,6 +1096,7 @@ interface RepoCardProps {
   selected: boolean;
   onToggle: () => void;
   onRemove: () => void;
+  onSkip: () => void;
   onCheck: () => void;
   onRun: () => void;
   onCancel: () => void;
@@ -802,6 +1119,7 @@ function RepoCard({
   selected,
   onToggle,
   onRemove,
+  onSkip,
   onCheck,
   onRun,
   onCancel,
@@ -875,7 +1193,6 @@ function RepoCard({
         y: 0,
         scale: 1,
       }}
-      exit={{ opacity: 0, scale: 0.95 }}
       whileHover={isDragging ? undefined : { y: -3 }}
       transition={{ type: "spring", stiffness: 300, damping: 26 }}
       className={`group relative rounded-2xl overflow-hidden flex flex-col select-none
@@ -1041,10 +1358,20 @@ function RepoCard({
 
         <button
           type="button"
+          onClick={onSkip}
+          disabled={running}
+          className="shrink-0 w-7 h-7 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] hover:bg-violet-500/20 text-gray-500 dark:text-white/60 hover:text-violet-500 flex items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          title="跳过检测：移入跳过清单，之后每次检测都忽略它"
+        >
+          <EyeOff size={13} />
+        </button>
+
+        <button
+          type="button"
           onClick={onRemove}
           disabled={running}
           className="shrink-0 w-7 h-7 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] hover:bg-red-500/20 text-gray-500 dark:text-white/60 hover:text-red-500 flex items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          title="移除该目录"
+          title="移出监控列表（不删除本地文件）"
         >
           <Trash2 size={13} />
         </button>
@@ -1714,13 +2041,45 @@ function PresetEditor({
 export default function GitPipeline() {
   const [repos, setRepos] = useState<string[]>(() => loadRepos());
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [statuses, setStatuses] = useState<Record<string, GitStatus>>({});
+  const [statuses, setStatuses] = useState<Record<string, GitStatus>>(() => loadStatuses());
   const [repoMeta, setRepoMeta] = useState<Record<string, RepoMeta>>(() => loadRepoMeta());
   const [config, setConfig] = useState<PipelineConfig>(() => loadConfig());
   const [editorOpen, setEditorOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
   /** 提交备注为空时临时标记的仓库（用于红色闪烁提示） */
   const [messageErrorRepos, setMessageErrorRepos] = useState<Set<string>>(new Set());
+
+  /** 需要整体扫描的根目录（选一个父文件夹，自动找出里面所有 git 项目） */
+  const [scanRoot, setScanRoot] = useState<string>(
+    () => localStorage.getItem(SCAN_ROOT_KEY) ?? "",
+  );
+  /** 扫描的最大子目录层级 */
+  const [scanDepth, setScanDepth] = useState<number>(() => loadScanDepth());
+  /** 由扫描发现的项目（与手动添加的项目区分，便于重新扫描时替换） */
+  const [scannedRepos, setScannedRepos] = useState<Set<string>>(
+    () => new Set(loadStringList(SCANNED_REPOS_KEY)),
+  );
+  const [scanning, setScanning] = useState(false);
+  const [scanSummary, setScanSummary] = useState<{
+    total: number;
+    changed: number;
+    truncated: boolean;
+  } | null>(null);
+  /**
+   * 跳过检测清单：非文件夹、没有 git 关联的条目在首次检测后自动进入，
+   * 也可以从卡片手动加入。只有"重新选择根目录"才会清空。
+   */
+  const [skipList, setSkipList] = useState<SkipItem[]>(() => loadSkipList());
+  /** 两个次级折叠栏的展开状态 */
+  const [sectionsOpen, setSectionsOpen] = useState<{ clean: boolean; skip: boolean }>(() => {
+    try {
+      const raw = localStorage.getItem(SECTIONS_OPEN_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return { clean: !!parsed?.clean, skip: !!parsed?.skip };
+    } catch {
+      return { clean: false, skip: false };
+    }
+  });
 
   const [chromeCollapsed, setChromeCollapsed] = useState<boolean>(() => {
     try {
@@ -1749,7 +2108,7 @@ export default function GitPipeline() {
   const batchSessionRef = useRef<string>("");
 
   /** 删除确认框 */
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<string[] | null>(null);
 
   const pushToast = useCallback((message: string, type: ToastData["type"] = "info") => {
     const id = ++toastCounter;
@@ -1771,6 +2130,47 @@ export default function GitPipeline() {
   useEffect(() => {
     saveRepoMeta(repoMeta);
   }, [repoMeta]);
+
+  useEffect(() => {
+    localStorage.setItem(SCAN_ROOT_KEY, scanRoot);
+  }, [scanRoot]);
+
+  useEffect(() => {
+    saveStringList(SCANNED_REPOS_KEY, Array.from(scannedRepos));
+  }, [scannedRepos]);
+
+  useEffect(() => {
+    localStorage.setItem(SCAN_DEPTH_KEY, String(scanDepth));
+  }, [scanDepth]);
+
+  useEffect(() => {
+    localStorage.setItem(SKIP_LIST_KEY, JSON.stringify(skipList));
+  }, [skipList]);
+
+  useEffect(() => {
+    localStorage.setItem(SECTIONS_OPEN_KEY, JSON.stringify(sectionsOpen));
+  }, [sectionsOpen]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STATUSES_KEY, JSON.stringify(statuses));
+    } catch {
+      // 超出配额时放弃缓存，不影响功能
+    }
+  }, [statuses]);
+
+  const skipPathSet = useMemo(() => new Set(skipList.map((s) => s.path)), [skipList]);
+
+  /** 把一批条目加入跳过清单（按路径去重） */
+  const addToSkipList = useCallback((items: SkipItem[]) => {
+    if (items.length === 0) return;
+    setSkipList((prev) => {
+      const seen = new Set(prev.map((s) => s.path));
+      const additions = items.filter((i) => !seen.has(i.path));
+      if (additions.length === 0) return prev;
+      return [...prev, ...additions];
+    });
+  }, []);
 
   const getPresetId = useCallback(
     (path: string) => repoMeta[path]?.presetId ?? config.activePresetId,
@@ -1804,7 +2204,31 @@ export default function GitPipeline() {
     });
   }, []);
 
-  const selectedRepos = useMemo(() => repos.filter((r) => selected.has(r)), [repos, selected]);
+  /** 卡片区：工作区不干净（或尚未检测）的项目 */
+  const visibleRepos = useMemo(
+    () => repos.filter((p) => !skipPathSet.has(p) && classifyRepo(statuses[p]) === "dirty"),
+    [repos, statuses, skipPathSet],
+  );
+
+  /** 次级栏：工作区干净的项目 */
+  const cleanRepos = useMemo(
+    () => repos.filter((p) => !skipPathSet.has(p) && classifyRepo(statuses[p]) === "clean"),
+    [repos, statuses, skipPathSet],
+  );
+
+  const selectedRepos = useMemo(
+    () => visibleRepos.filter((r) => selected.has(r)),
+    [visibleRepos, selected],
+  );
+
+  /** 拖拽排序作用于可见子集，写回时保持被隐藏项目的原有位置 */
+  const handleReorderVisible = useCallback((nextVisible: string[]) => {
+    setRepos((prev) => {
+      const visibleSet = new Set(nextVisible);
+      let i = 0;
+      return prev.map((p) => (visibleSet.has(p) ? nextVisible[i++] : p));
+    });
+  }, []);
 
   const handleAdd = async () => {
     try {
@@ -1846,32 +2270,155 @@ export default function GitPipeline() {
 
   const handleRemove = (path: string) => {
     if (runningRepos.has(path)) {
-      pushToast("该项目正在执行任务，请先取消后再移除", "error");
+      pushToast("该项目正在执行任务，请先取消后再移出", "error");
       return;
     }
-    setConfirmRemove(path);
+    setConfirmRemove([path]);
   };
 
-  const confirmRemoveRepo = () => {
-    const path = confirmRemove;
-    if (!path) return;
-    setRepos((prev) => prev.filter((p) => p !== path));
+  const handleBatchRemove = () => {
+    const targets = selectedRepos;
+    if (targets.length === 0) {
+      pushToast("请先勾选至少一个项目", "info");
+      return;
+    }
+    const busy = targets.filter((p) => runningRepos.has(p));
+    if (busy.length > 0) {
+      pushToast(`有 ${busy.length} 个项目正在执行任务，请先取消后再移出`, "error");
+      return;
+    }
+    setConfirmRemove(targets);
+  };
+
+  const confirmRemoveRepos = () => {
+    const paths = confirmRemove;
+    if (!paths || paths.length === 0) return;
+    const target = new Set(paths);
+
+    setRepos((prev) => prev.filter((p) => !target.has(p)));
     setSelected((prev) => {
       const ns = new Set(prev);
-      ns.delete(path);
+      paths.forEach((p) => ns.delete(p));
       return ns;
     });
     setStatuses((prev) => {
-      const { [path]: _, ...rest } = prev;
-      return rest;
+      const next = { ...prev };
+      paths.forEach((p) => delete next[p]);
+      return next;
     });
     setRepoMeta((prev) => {
-      const { [path]: _, ...rest } = prev;
-      return rest;
+      const next = { ...prev };
+      paths.forEach((p) => delete next[p]);
+      return next;
     });
-    resetLog(path);
+    setScannedRepos((prev) => {
+      const ns = new Set(prev);
+      paths.forEach((p) => ns.delete(p));
+      return ns;
+    });
+    setRepoLogs((prev) => {
+      const next = { ...prev };
+      paths.forEach((p) => delete next[p]);
+      return next;
+    });
+
     setConfirmRemove(null);
-    pushToast("已移除目录", "info");
+    const tip =
+      paths.length > 1
+        ? `已移出 ${paths.length} 个项目（本地文件未删除）`
+        : `已移出「${getRepoName(paths[0])}」（本地文件未删除）`;
+    pushToast(tip, "info");
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: paths.length > 1 ? "点击「批量移出监控」" : "移出监控",
+      status: "success",
+      detail: `${tip}：${paths.map((p) => getRepoName(p)).join("、")}`,
+    });
+  };
+
+  /** 把项目移入跳过检测清单（不删除本地文件，之后每次检测都忽略） */
+  const skipRepos = useCallback(
+    (paths: string[], opts: { silent?: boolean } = {}) => {
+      if (paths.length === 0) return;
+      const target = new Set(paths);
+      addToSkipList(
+        paths.map((p) => ({
+          path: p,
+          name: getRepoName(p),
+          kind: "manual" as const,
+          reason: SKIP_REASON_MANUAL,
+        })),
+      );
+      setRepos((prev) => prev.filter((p) => !target.has(p)));
+      setSelected((prev) => {
+        const ns = new Set(prev);
+        paths.forEach((p) => ns.delete(p));
+        return ns;
+      });
+      setScannedRepos((prev) => {
+        const ns = new Set(prev);
+        paths.forEach((p) => ns.delete(p));
+        return ns;
+      });
+      if (!opts.silent) {
+        pushToast(
+          paths.length > 1
+            ? `已将 ${paths.length} 个项目加入跳过检测`
+            : `已跳过检测「${getRepoName(paths[0])}」`,
+          "info",
+        );
+      }
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: paths.length > 1 ? "点击「批量跳过检测」" : "点击「跳过检测」",
+        status: "success",
+        detail: paths.map((p) => getRepoName(p)).join("、"),
+      });
+    },
+    [addToSkipList, pushToast],
+  );
+
+  const handleBatchSkip = () => {
+    const targets = selectedRepos;
+    if (targets.length === 0) {
+      pushToast("请先勾选至少一个项目", "info");
+      return;
+    }
+    const busy = targets.filter((p) => runningRepos.has(p));
+    if (busy.length > 0) {
+      pushToast(`有 ${busy.length} 个项目正在执行任务，请先取消后再跳过`, "error");
+      return;
+    }
+    skipRepos(targets);
+  };
+
+  /** 从跳过清单恢复：下次检测重新纳入 */
+  const handleRestoreSkip = (path: string) => {
+    setSkipList((prev) => prev.filter((s) => s.path !== path));
+    pushToast(`已恢复「${getRepoName(path)}」，重新检测后生效`, "info");
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "恢复检测",
+      status: "info",
+      detail: path,
+    });
+  };
+
+  const handleRestoreAllSkip = () => {
+    const n = skipList.length;
+    if (n === 0) return;
+    setSkipList([]);
+    pushToast(`已恢复全部 ${n} 项，重新检测后生效`, "info");
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "恢复全部跳过项",
+      status: "info",
+      detail: `共 ${n} 项`,
+    });
   };
 
   const handleToggle = (path: string) => {
@@ -1884,8 +2431,8 @@ export default function GitPipeline() {
   };
 
   const handleSelectAll = () => {
-    if (selected.size === repos.length) setSelected(new Set());
-    else setSelected(new Set(repos));
+    if (visibleRepos.length > 0 && selectedRepos.length === visibleRepos.length) setSelected(new Set());
+    else setSelected(new Set(visibleRepos));
   };
 
   const runCheckFor = useCallback(
@@ -1905,6 +2452,26 @@ export default function GitPipeline() {
           });
           return next;
         });
+
+        // 没有 git 关联的目录直接进入跳过清单，不再占用列表
+        const nonGit = result.filter((s) => !s.is_repo);
+        if (nonGit.length > 0) {
+          const nonGitPaths = new Set(nonGit.map((s) => s.path));
+          addToSkipList(
+            nonGit.map((s) => ({
+              path: s.path,
+              name: s.name || getRepoName(s.path),
+              kind: "dir" as const,
+              reason: s.error || "没有 git 关联",
+            })),
+          );
+          setRepos((prev) => prev.filter((p) => !nonGitPaths.has(p)));
+          setSelected((prev) => {
+            const ns = new Set(prev);
+            nonGitPaths.forEach((p) => ns.delete(p));
+            return ns;
+          });
+        }
       } catch (e) {
         pushToast(`检测失败: ${e}`, "error");
       } finally {
@@ -1915,15 +2482,176 @@ export default function GitPipeline() {
         });
       }
     },
-    [pushToast],
+    [addToSkipList, pushToast],
   );
 
+  /**
+   * 扫描根目录：每次都从零开始重新检测。
+   * 上一轮扫描出来的项目会被整体替换，非 git 的文件/文件夹由后端归到"省略清单"里。
+   */
+  const runScan = useCallback(
+    async (
+      root: string,
+      opts: { silent?: boolean; skipPaths?: string[] } = {},
+    ): Promise<GitScanResult | null> => {
+      if (!root) return null;
+      setScanning(true);
+      try {
+        const res = await invoke<GitScanResult>("scan_git_repos", {
+          roots: [root],
+          maxDepth: scanDepth,
+          skipPaths: opts.skipPaths ?? skipList.map((s) => s.path),
+        });
+
+        const found = res.repos.map((r) => r.path);
+        const foundSet = new Set(found);
+        const stale = Array.from(scannedRepos).filter((p) => !foundSet.has(p));
+
+        // 后端上报的无 git 文件/文件夹进入跳过清单，下次检测直接忽略
+        addToSkipList(res.skipped);
+
+        setStatuses((prev) => {
+          const next = { ...prev };
+          // 清掉上轮扫描遗留、本轮已不存在的项目状态
+          stale.forEach((p) => delete next[p]);
+          res.repos.forEach((s) => {
+            next[s.path] = s;
+          });
+          return next;
+        });
+
+        setRepoLogs((prev) => {
+          if (stale.length === 0) return prev;
+          const next = { ...prev };
+          stale.forEach((p) => delete next[p]);
+          return next;
+        });
+
+        // 手动添加的项目保持原位与原顺序，扫描结果整体替换
+        setRepos((prev) => {
+          const manual = prev.filter((p) => !scannedRepos.has(p));
+          const manualSet = new Set(manual);
+          return [...manual, ...found.filter((p) => !manualSet.has(p))];
+        });
+
+        setSelected((prev) => {
+          const ns = new Set<string>();
+          prev.forEach((p) => {
+            if (!scannedRepos.has(p) || foundSet.has(p)) ns.add(p);
+          });
+          return ns;
+        });
+
+        setScannedRepos(foundSet);
+        setScanSummary({ total: res.total, changed: res.changed, truncated: res.truncated });
+
+        if (!opts.silent) {
+          const msg = `扫描到 ${res.total} 个 git 项目，${res.changed} 个有待提交改动`;
+          pushToast(res.truncated ? `${msg}（已达数量上限）` : msg, "success");
+          logOperation({
+            page: LOG_PAGE,
+            pageLabel: LOG_PAGE_LABEL,
+            action: "扫描根目录",
+            status: "success",
+            detail: `${root} → ${msg}；新增跳过 ${res.skipped_total} 个无 git 的文件/文件夹`,
+          });
+        }
+        return res;
+      } catch (e) {
+        pushToast(`扫描失败: ${e}`, "error");
+        logOperation({
+          page: LOG_PAGE,
+          pageLabel: LOG_PAGE_LABEL,
+          action: "扫描根目录",
+          status: "error",
+          detail: `扫描失败: ${e}`,
+        });
+        return null;
+      } finally {
+        setScanning(false);
+      }
+    },
+    [scanDepth, scannedRepos, skipList, addToSkipList, pushToast],
+  );
+
+  const handlePickRoot = async () => {
+    try {
+      const result = await open({
+        directory: true,
+        multiple: false,
+        title: "选择包含多个项目的根目录",
+      });
+      if (!result) return;
+      const root = Array.isArray(result) ? result[0] : result;
+      if (!root) return;
+      setScanRoot(root);
+      // 重新选择根目录是唯一会清空跳过检测清单的操作
+      setSkipList([]);
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "点击「选择根目录」",
+        status: "info",
+        detail: `${root}（清空跳过清单，重新开始检测）`,
+      });
+      await runScan(root, { skipPaths: [] });
+    } catch (e) {
+      pushToast(`选择根目录失败: ${e}`, "error");
+    }
+  };
+
+  const handleClearRoot = () => {
+    setScanRoot("");
+    // 清掉上一次扫描留下的一切，只保留手动添加的项目
+    const stale = Array.from(scannedRepos);
+    setRepos((prev) => prev.filter((p) => !scannedRepos.has(p)));
+    setStatuses((prev) => {
+      const next = { ...prev };
+      stale.forEach((p) => delete next[p]);
+      return next;
+    });
+    setSelected((prev) => {
+      const ns = new Set(prev);
+      stale.forEach((p) => ns.delete(p));
+      return ns;
+    });
+    setRepoLogs((prev) => {
+      const next = { ...prev };
+      stale.forEach((p) => delete next[p]);
+      return next;
+    });
+    setScannedRepos(new Set());
+    setScanSummary(null);
+    setSkipList([]);
+    pushToast("已清除扫描根目录、检测结果和跳过清单", "info");
+  };
+
   const handleCheckAll = async () => {
-    const targets = selectedRepos.length > 0 ? selectedRepos : repos;
-    if (targets.length === 0) {
-      pushToast("请先添加至少一个目录", "info");
+    const manualTargets = (selectedRepos.length > 0 ? selectedRepos : repos).filter(
+      (p) => !scannedRepos.has(p),
+    );
+
+    if (!scanRoot && repos.length === 0) {
+      pushToast("请先选择一个根目录，或手动添加项目目录", "info");
       return;
     }
+
+    if (scanRoot) {
+      const res = await runScan(scanRoot);
+      if (manualTargets.length > 0) await runCheckFor(manualTargets);
+      if (res) {
+        logOperation({
+          page: LOG_PAGE,
+          pageLabel: LOG_PAGE_LABEL,
+          action: "点击「全部检测」",
+          status: "success",
+          detail: `重新扫描 ${scanRoot}：${res.total} 个 git 项目，${res.changed} 个有待提交改动`,
+        });
+      }
+      return;
+    }
+
+    const targets = selectedRepos.length > 0 ? selectedRepos : repos;
     await runCheckFor(targets);
     pushToast(`已检测 ${targets.length} 个目录`, "success");
     logOperation({
@@ -2198,23 +2926,10 @@ export default function GitPipeline() {
   };
 
   // 统计
-  const totalChangesAllRepos = useMemo(() => {
-    let n = 0;
-    repos.forEach((r) => {
-      const s = statuses[r];
-      if (s?.is_repo) n += s.modified + s.added + s.deleted + s.renamed + s.untracked + s.conflicted;
-    });
-    return n;
-  }, [repos, statuses]);
-
-  const reposWithChanges = useMemo(() => {
-    let n = 0;
-    repos.forEach((r) => {
-      const s = statuses[r];
-      if (s?.is_repo && s.modified + s.added + s.deleted + s.renamed + s.untracked + s.conflicted > 0) n++;
-    });
-    return n;
-  }, [repos, statuses]);
+  const totalChangesAllRepos = useMemo(
+    () => repos.reduce((sum, r) => sum + changeCount(statuses[r]), 0),
+    [repos, statuses],
+  );
 
   const activePresetGlobal = config.presets.find((p) => p.id === config.activePresetId) ?? config.presets[0];
 
@@ -2226,21 +2941,32 @@ export default function GitPipeline() {
 
       <ConfirmDialog
         open={!!confirmRemove}
-        title="确认移除项目？"
+        title={confirmRemove && confirmRemove.length > 1 ? "确认批量移出监控？" : "确认移出监控？"}
         description={
           confirmRemove ? (
             <>
-              将从监控列表中移除
-              <span className="mx-1 font-semibold text-gray-800 dark:text-white/90">
-                {getRepoName(confirmRemove)}
-              </span>
-              。只会从本工具移除，不会删除本地文件。
+              将从监控列表中移出
+              {confirmRemove.length > 1 ? (
+                <>
+                  <span className="mx-1 font-semibold text-gray-800 dark:text-white/90">
+                    {confirmRemove.length} 个项目
+                  </span>
+                  （{confirmRemove.slice(0, 3).map((p) => getRepoName(p)).join("、")}
+                  {confirmRemove.length > 3 ? ` 等 ${confirmRemove.length} 个` : ""}）
+                </>
+              ) : (
+                <span className="mx-1 font-semibold text-gray-800 dark:text-white/90">
+                  {getRepoName(confirmRemove[0])}
+                </span>
+              )}
+              。<span className="font-medium text-gray-700 dark:text-white/80">不会删除任何本地文件</span>
+              ，重新检测后仍会出现。
             </>
           ) : null
         }
-        confirmText="移除"
+        confirmText="移出监控"
         danger
-        onConfirm={confirmRemoveRepo}
+        onConfirm={confirmRemoveRepos}
         onCancel={() => setConfirmRemove(null)}
       />
 
@@ -2289,11 +3015,7 @@ export default function GitPipeline() {
               <div className="hidden sm:flex items-center gap-2 text-[11px] text-gray-500 dark:text-white/50 ml-1">
                 <span className="text-gray-300 dark:text-white/20">·</span>
                 <span>
-                  项目 <span className="font-semibold text-gray-800 dark:text-white/90">{repos.length}</span>
-                </span>
-                <span className="text-gray-300 dark:text-white/20">·</span>
-                <span>
-                  有改动 <span className="font-semibold text-amber-500">{reposWithChanges}</span>
+                  待提交 <span className="font-semibold text-amber-500">{visibleRepos.length}</span>
                 </span>
                 <span className="text-gray-300 dark:text-white/20">·</span>
                 <span>
@@ -2301,27 +3023,47 @@ export default function GitPipeline() {
                 </span>
                 <span className="text-gray-300 dark:text-white/20">·</span>
                 <span>
-                  运行中 <span className="font-semibold text-emerald-500">{runningRepos.size}</span>
+                  干净 <span className="font-semibold text-emerald-500">{cleanRepos.length}</span>
                 </span>
+                <span className="text-gray-300 dark:text-white/20">·</span>
+                <span title="跳过检测的文件、无 git 文件夹和手动跳过的项目">
+                  已跳过 <span className="font-semibold text-gray-500 dark:text-white/60">{skipList.length}</span>
+                </span>
+                {runningRepos.size > 0 && (
+                  <>
+                    <span className="text-gray-300 dark:text-white/20">·</span>
+                    <span>
+                      运行中 <span className="font-semibold text-emerald-500">{runningRepos.size}</span>
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
             <button
               type="button"
-              onClick={handleAdd}
+              onClick={handlePickRoot}
               className="h-7 px-2.5 rounded-lg bg-violet-500 hover:bg-violet-600 text-white text-xs font-medium flex items-center gap-1 shadow-[0_0_10px_rgba(139,92,246,0.3)]"
-              title="添加目录"
+              title="选择根目录（自动扫描里面的所有 git 项目）"
+            >
+              <FolderSearch size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={handleAdd}
+              className="h-7 px-2.5 rounded-lg bg-violet-500/15 hover:bg-violet-500/25 text-violet-600 dark:text-violet-300 border border-violet-500/20 text-xs flex items-center gap-1"
+              title="单独添加项目目录"
             >
               <FolderPlus size={12} />
             </button>
             <button
               type="button"
               onClick={handleCheckAll}
-              disabled={repos.length === 0}
+              disabled={scanning || (repos.length === 0 && !scanRoot)}
               className="h-7 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-600 dark:text-sky-300 border border-sky-500/20 text-xs flex items-center gap-1 disabled:opacity-50"
               title="全部检测"
             >
-              <RefreshCw size={12} />
+              <RefreshCw size={12} className={scanning ? "animate-spin" : undefined} />
             </button>
             <button
               type="button"
@@ -2362,15 +3104,74 @@ export default function GitPipeline() {
             }}
             style={{ overflow: "hidden" }}
           >
+            {/* 扫描根目录 */}
+            <div className="border-t border-black/[0.06] dark:border-white/[0.08] px-3 py-2.5 flex items-start gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 shrink-0">
+                <FolderSearch size={13} className="text-violet-500" />
+                <span className="text-[11px] text-gray-500 dark:text-white/50">扫描根目录</span>
+              </div>
+
+              <div className="flex-1 min-w-[200px] flex items-center gap-1.5 flex-wrap">
+                {!scanRoot ? (
+                  <span className="text-[11px] text-gray-400 dark:text-white/40">
+                    选一个父文件夹，点「全部检测」自动找出里面所有有改动的 git 项目
+                  </span>
+                ) : (
+                  <span
+                    title={scanRoot}
+                    className="inline-flex items-center gap-1 max-w-[360px] h-7 pl-2 pr-1 rounded-lg bg-violet-500/10 border border-violet-500/20 text-[11px] text-violet-600 dark:text-violet-300"
+                  >
+                    <span className="truncate">{scanRoot}</span>
+                    <button
+                      type="button"
+                      onClick={handleClearRoot}
+                      className="shrink-0 w-5 h-5 rounded-md hover:bg-violet-500/20 flex items-center justify-center"
+                      title="清除根目录、检测结果和跳过清单"
+                    >
+                      <X size={11} />
+                    </button>
+                  </span>
+                )}
+                {skipList.length > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 h-7 px-2 rounded-lg bg-slate-500/10 border border-slate-500/20 text-[11px] text-slate-600 dark:text-slate-300"
+                    title="重新检测时会直接跳过；只有重新选择根目录才会清空"
+                  >
+                    <EyeOff size={11} /> 跳过 {skipList.length} 项
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handlePickRoot}
+                  className="h-7 px-2.5 rounded-lg bg-violet-500/10 hover:bg-violet-500/20 text-violet-600 dark:text-violet-300 border border-violet-500/20 text-xs flex items-center gap-1.5"
+                  title="重新选择根目录并从零开始检测"
+                >
+                  <FolderSearch size={12} /> {scanRoot ? "重新选择" : "选择根目录"}
+                </button>
+                <span className="text-[11px] text-gray-500 dark:text-white/50">深度</span>
+                <Select
+                  compact
+                  align="end"
+                  value={String(scanDepth)}
+                  onChange={(v) => setScanDepth(Number(v))}
+                  title="向下查找几层子目录，层级越深越慢"
+                  options={SCAN_DEPTH_OPTIONS.map((d) => ({ value: String(d), label: `${d} 层` }))}
+                />
+              </div>
+            </div>
+
             <div className="border-t border-black/[0.06] dark:border-white/[0.08] px-3 py-2.5 flex items-center gap-2 flex-wrap">
               <div className="flex items-center gap-1.5 mr-auto flex-wrap">
-                {repos.length > 0 && (
+                {visibleRepos.length > 0 && (
                   <button
                     type="button"
                     onClick={handleSelectAll}
                     className="h-7 px-2.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] hover:bg-black/[0.08] dark:hover:bg-white/[0.10] text-gray-700 dark:text-white/70 text-xs"
                   >
-                    {selected.size === repos.length ? "全不选" : "全选"}
+                    {selectedRepos.length === visibleRepos.length ? "全不选" : "全选"}
                   </button>
                 )}
                 <button
@@ -2383,10 +3184,11 @@ export default function GitPipeline() {
                 <button
                   type="button"
                   onClick={handleCheckAll}
-                  disabled={repos.length === 0}
+                  disabled={scanning || (repos.length === 0 && !scanRoot)}
                   className="h-7 px-2.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-300 border border-sky-500/20 text-xs flex items-center gap-1.5 disabled:opacity-50"
                 >
-                  <RefreshCw size={12} /> 全部检测
+                  <RefreshCw size={12} className={scanning ? "animate-spin" : undefined} />
+                  {scanning ? "检测中…" : "全部检测"}
                 </button>
                 <button
                   type="button"
@@ -2472,13 +3274,31 @@ export default function GitPipeline() {
                 <Square size={13} /> 取消全部
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={handleBatchRun}
-                className="h-9 px-4 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 hover:from-violet-600 hover:to-indigo-600 text-white text-sm font-semibold flex items-center gap-2 shadow-[0_0_16px_rgba(139,92,246,0.4)]"
-              >
-                <Rocket size={13} /> 批量一键提交
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleBatchSkip}
+                  className="h-9 px-4 rounded-xl bg-black/[0.04] dark:bg-white/[0.06] hover:bg-violet-500/15 text-gray-700 dark:text-white/70 hover:text-violet-600 dark:hover:text-violet-300 border border-black/[0.08] dark:border-white/[0.10] hover:border-violet-500/25 text-sm font-medium flex items-center gap-2 transition-colors"
+                  title="加入跳过清单，之后每次检测都忽略这些项目"
+                >
+                  <EyeOff size={13} /> 批量跳过检测
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBatchRemove}
+                  className="h-9 px-4 rounded-xl bg-black/[0.04] dark:bg-white/[0.06] hover:bg-red-500/15 dark:hover:bg-red-500/20 text-gray-700 dark:text-white/70 hover:text-red-600 dark:hover:text-red-300 border border-black/[0.08] dark:border-white/[0.10] hover:border-red-500/25 text-sm font-medium flex items-center gap-2 transition-colors"
+                  title="仅从监控列表移出，不会删除任何本地文件"
+                >
+                  <Trash2 size={13} /> 批量移出监控
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBatchRun}
+                  className="h-9 px-4 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 hover:from-violet-600 hover:to-indigo-600 text-white text-sm font-semibold flex items-center gap-2 shadow-[0_0_16px_rgba(139,92,246,0.4)]"
+                >
+                  <Rocket size={13} /> 批量一键提交
+                </button>
+              </>
             )}
           </motion.div>
         )}
@@ -2487,71 +3307,186 @@ export default function GitPipeline() {
         <div className="rounded-2xl bg-white/70 dark:bg-white/[0.04] backdrop-blur-xl border border-black/[0.08] dark:border-white/[0.10] p-4">
           <SectionHeader
             icon={FolderGit2}
-            title="监控项目"
-            count={repos.length}
+            title="待提交项目"
+            count={visibleRepos.length}
             action={
-              <div className="text-[11px] text-gray-500 dark:text-white/50">
-                {selected.size > 0 ? `已选 ${selected.size} 项` : "点击卡片复选框批量选中"}
+              <div className="flex items-center gap-2 text-[11px] text-gray-500 dark:text-white/50">
+                {scanSummary && (
+                  <span title="最近一次扫描结果">
+                    扫描到 {scanSummary.total} 个 git 项目
+                    {scanSummary.truncated ? "（已达上限）" : ""}
+                  </span>
+                )}
+                <span>{selected.size > 0 ? `已选 ${selected.size} 项` : "点击卡片复选框批量选中"}</span>
               </div>
             }
           />
 
-          {repos.length === 0 ? (
+          {visibleRepos.length === 0 ? (
             <div className="py-14 text-center">
-              <FolderPlus size={36} className="mx-auto text-gray-400 dark:text-white/30 mb-3" />
-              <div className="text-sm text-gray-500 dark:text-white/50">还没有添加任何项目目录</div>
-              <div className="text-[11px] text-gray-400 dark:text-white/40 mt-1">
-                可一次选择多个目录，支持 git 仓库的批量监控和提交
-              </div>
-              <button
-                type="button"
-                onClick={handleAdd}
-                className="mt-4 h-9 px-4 rounded-xl bg-violet-500 hover:bg-violet-600 text-white text-xs font-medium inline-flex items-center gap-1.5 shadow-[0_0_12px_rgba(139,92,246,0.35)]"
-              >
-                <FolderPlus size={13} /> 选择目录
-              </button>
+              {scanning ? (
+                <>
+                  <RefreshCw size={36} className="mx-auto text-sky-500/70 mb-3 animate-spin" />
+                  <div className="text-sm text-gray-500 dark:text-white/50">正在检测…</div>
+                </>
+              ) : cleanRepos.length > 0 ? (
+                <>
+                  <FolderCheck size={36} className="mx-auto text-emerald-500/70 mb-3" />
+                  <div className="text-sm text-gray-500 dark:text-white/50">
+                    {cleanRepos.length} 个项目工作区都是干净的，没有需要提交的内容
+                  </div>
+                  <div className="text-[11px] text-gray-400 dark:text-white/40 mt-1">
+                    它们都在下面的「工作区干净」栏里
+                  </div>
+                </>
+              ) : repos.length === 0 ? (
+                <>
+                  <FolderSearch size={36} className="mx-auto text-gray-400 dark:text-white/30 mb-3" />
+                  <div className="text-sm text-gray-500 dark:text-white/50">还没有选择要检测的目录</div>
+                  <div className="text-[11px] text-gray-400 dark:text-white/40 mt-1">
+                    选一个包含多个项目的父文件夹，点「全部检测」即可列出所有需要提交的项目
+                  </div>
+                  <div className="mt-4 flex items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePickRoot}
+                      className="h-9 px-4 rounded-xl bg-violet-500 hover:bg-violet-600 text-white text-xs font-medium inline-flex items-center gap-1.5 shadow-[0_0_12px_rgba(139,92,246,0.35)]"
+                    >
+                      <FolderSearch size={13} /> 选择根目录
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAdd}
+                      className="h-9 px-4 rounded-xl bg-violet-500/10 hover:bg-violet-500/20 text-violet-600 dark:text-violet-300 border border-violet-500/20 text-xs font-medium inline-flex items-center gap-1.5"
+                    >
+                      <FolderPlus size={13} /> 单独添加项目
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Check size={36} className="mx-auto text-emerald-500/70 mb-3" />
+                  <div className="text-sm text-gray-500 dark:text-white/50">
+                    没有需要提交的项目
+                  </div>
+                  <div className="text-[11px] text-gray-400 dark:text-white/40 mt-1">
+                    干净的项目在「工作区干净」栏，没有 git 关联的内容在「跳过检测」栏
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              <AnimatePresence initial={false}>
-                {repos.map((p) => (
-                  <DraggableRepoCard
-                    key={p}
-                    value={p}
-                    allValues={repos}
-                    onReorder={setRepos}
-                    status={statuses[p]}
-                    selected={selected.has(p)}
-                    onToggle={() => handleToggle(p)}
-                    onRemove={() => handleRemove(p)}
-                    onCheck={() => runCheckFor([p])}
-                    onRun={() => handleRunOne(p)}
-                    onCancel={() => handleCancelOne(p)}
-                    checking={checkingRepos.has(p)}
-                    running={runningRepos.has(p)}
-                    presets={config.presets}
-                    presetId={getPresetId(p)}
-                    onPresetChange={(id) => updateRepoMeta(p, { presetId: id })}
-                    message={getMessage(p)}
-                    onMessageChange={(msg) => {
-                      updateRepoMeta(p, { lastMessage: msg });
-                      if (msg.trim() && messageErrorRepos.has(p)) {
-                        setMessageErrorRepos((prev) => {
-                          const ns = new Set(prev);
-                          ns.delete(p);
-                          return ns;
-                        });
-                      }
-                    }}
-                    messageError={messageErrorRepos.has(p)}
-                    logs={repoLogs[p] ?? []}
-                    onClearLogs={() => resetLog(p)}
-                  />
-                ))}
-              </AnimatePresence>
+              {visibleRepos.map((p) => (
+                <DraggableRepoCard
+                  key={p}
+                  value={p}
+                  allValues={visibleRepos}
+                  onReorder={handleReorderVisible}
+                  status={statuses[p]}
+                  selected={selected.has(p)}
+                  onToggle={() => handleToggle(p)}
+                  onRemove={() => handleRemove(p)}
+                  onSkip={() => skipRepos([p])}
+                  onCheck={() => runCheckFor([p])}
+                  onRun={() => handleRunOne(p)}
+                  onCancel={() => handleCancelOne(p)}
+                  checking={checkingRepos.has(p)}
+                  running={runningRepos.has(p)}
+                  presets={config.presets}
+                  presetId={getPresetId(p)}
+                  onPresetChange={(id) => updateRepoMeta(p, { presetId: id })}
+                  message={getMessage(p)}
+                  onMessageChange={(msg) => {
+                    updateRepoMeta(p, { lastMessage: msg });
+                    if (msg.trim() && messageErrorRepos.has(p)) {
+                      setMessageErrorRepos((prev) => {
+                        const ns = new Set(prev);
+                        ns.delete(p);
+                        return ns;
+                      });
+                    }
+                  }}
+                  messageError={messageErrorRepos.has(p)}
+                  logs={repoLogs[p] ?? []}
+                  onClearLogs={() => resetLog(p)}
+                />
+              ))}
             </div>
           )}
         </div>
+
+        {/* 工作区干净的项目 */}
+        {cleanRepos.length > 0 && (
+          <CollapsibleSection
+            icon={FolderCheck}
+            title="工作区干净"
+            hint="没有需要提交的改动"
+            count={cleanRepos.length}
+            accent="bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/20"
+            open={sectionsOpen.clean}
+            onToggle={() => setSectionsOpen((s) => ({ ...s, clean: !s.clean }))}
+          >
+            <div className="space-y-0.5">
+              {cleanRepos.map((p) => (
+                <CleanRow
+                  key={p}
+                  path={p}
+                  status={statuses[p]}
+                  checking={checkingRepos.has(p)}
+                  onCheck={() => runCheckFor([p])}
+                  onSkip={() => skipRepos([p])}
+                />
+              ))}
+            </div>
+          </CollapsibleSection>
+        )}
+
+        {/* 跳过检测清单 */}
+        {skipList.length > 0 && (
+          <CollapsibleSection
+            icon={EyeOff}
+            title="跳过检测"
+            hint="每次检测都忽略，重新选择根目录才会清空"
+            count={skipList.length}
+            accent="bg-slate-500/15 text-slate-600 dark:text-slate-300 border-slate-500/20"
+            open={sectionsOpen.skip}
+            onToggle={() => setSectionsOpen((s) => ({ ...s, skip: !s.skip }))}
+            action={
+              <button
+                type="button"
+                onClick={handleRestoreAllSkip}
+                className="shrink-0 h-7 px-2.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] hover:bg-sky-500/15 text-gray-600 dark:text-white/60 hover:text-sky-600 dark:hover:text-sky-300 text-[11px] flex items-center gap-1.5"
+                title="全部恢复检测，下次检测重新纳入"
+              >
+                <Eye size={11} /> 全部恢复
+              </button>
+            }
+          >
+            <div className="space-y-0.5">
+              {SKIP_KIND_ORDER.flatMap((kind) => {
+                const group = skipList.filter((s) => s.kind === kind);
+                if (group.length === 0) return [];
+                const meta = SKIP_KIND_META[kind];
+                return [
+                  <div
+                    key={`h-${kind}`}
+                    className="px-2.5 pt-2 pb-1 text-[10.5px] font-medium text-gray-400 dark:text-white/40"
+                  >
+                    {meta.label} · {group.length}
+                  </div>,
+                  ...group.map((item) => (
+                    <SkipRow
+                      key={item.path}
+                      item={item}
+                      onRestore={() => handleRestoreSkip(item.path)}
+                    />
+                  )),
+                ];
+              })}
+            </div>
+          </CollapsibleSection>
+        )}
       </div>
 
       <AnimatePresence>

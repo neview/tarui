@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save, confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { Alert, useAlert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,9 @@ import {
   Settings2,
   Eraser,
   Import,
+  FileDown,
+  Plus,
+  Trash2,
   X,
   RotateCw,
 } from "lucide-react";
@@ -34,23 +37,35 @@ interface EnvConfig {
 }
 
 interface GlobalConfig {
-  mangoDir: string;
-  agentDir: string;
-  orderDir: string;
   secretId: string;
   secretKey: string;
 }
 
-interface AllConfig {
-  global: GlobalConfig;
-  projects: Record<string, Record<string, EnvConfig>>;
+/** 一个可部署项目：唯一标识 + 展示名 + 本地目录 + 各环境配置 */
+interface ProjectConfig {
+  key: string;
+  label: string;
+  dir: string;
+  envs: Record<string, EnvConfig>;
 }
 
-const PROJECT_GROUPS = [
+interface AllConfig {
+  global: GlobalConfig;
+  projects: ProjectConfig[];
+}
+
+const DEFAULT_PROJECTS = [
   { key: "mango", label: "芒果总后台" },
   { key: "agent", label: "代理后台" },
   { key: "order", label: "网页接单后台" },
-] as const;
+];
+
+/** 旧版配置里项目目录存放在 global 上的字段名 */
+const LEGACY_DIR_FIELD: Record<string, string> = {
+  mango: "mangoDir",
+  agent: "agentDir",
+  order: "orderDir",
+};
 
 const ENVIRONMENTS = [
   { key: "prod", label: "正式环境", color: "from-emerald-500/20 to-teal-500/20", dot: "bg-emerald-500" },
@@ -58,7 +73,9 @@ const ENVIRONMENTS = [
   { key: "backup", label: "备用正式环境", color: "from-violet-500/20 to-purple-500/20", dot: "bg-violet-500" },
 ] as const;
 
-const STORAGE_KEY = "weixin-deploy-config-v2";
+const STORAGE_KEY = "weixin-deploy-config-v3";
+const LEGACY_STORAGE_KEY = "weixin-deploy-config-v2";
+const CONFIG_VERSION = 3;
 
 const LOG_PAGE = "weixin";
 const LOG_PAGE_LABEL = "微信部署";
@@ -67,34 +84,94 @@ function defaultEnvConfig(): EnvConfig {
   return { buildCommand: "npm run build", cosRegion: "", cosBucket: "", cdnDomain: "" };
 }
 
-function defaultGlobal(): GlobalConfig {
-  return { mangoDir: "", agentDir: "", orderDir: "", secretId: "", secretKey: "" };
+function defaultEnvs(): Record<string, EnvConfig> {
+  const envs: Record<string, EnvConfig> = {};
+  for (const e of ENVIRONMENTS) envs[e.key] = defaultEnvConfig();
+  return envs;
+}
+
+function defaultProjects(): ProjectConfig[] {
+  return DEFAULT_PROJECTS.map((p) => ({ ...p, dir: "", envs: defaultEnvs() }));
+}
+
+/**
+ * 解析配置对象，同时兼容三种写法：
+ * - v3：projects 为对象或数组，每项含 label / dir / envs
+ * - v2：projects[key] 直接是环境表，目录放在 global.xxxDir
+ */
+function parseConfig(raw: any): AllConfig | null {
+  if (!raw || typeof raw !== "object" || !raw.projects) return null;
+  const g = raw.global ?? {};
+
+  const entries: [string, any][] = Array.isArray(raw.projects)
+    ? raw.projects.filter((p: any) => p?.key).map((p: any) => [String(p.key), p])
+    : Object.entries(raw.projects);
+
+  const projects: ProjectConfig[] = [];
+  for (const [key, value] of entries) {
+    if (!key || !value || typeof value !== "object") continue;
+    const rawEnvs = value.envs && typeof value.envs === "object" ? value.envs : value;
+    const envs = defaultEnvs();
+    for (const e of ENVIRONMENTS) {
+      const src = rawEnvs[e.key];
+      if (!src || typeof src !== "object") continue;
+      envs[e.key] = {
+        buildCommand: src.buildCommand ?? "",
+        cosRegion: src.cosRegion ?? "",
+        cosBucket: src.cosBucket ?? "",
+        cdnDomain: src.cdnDomain ?? "",
+      };
+    }
+    projects.push({
+      key,
+      label: value.label || DEFAULT_PROJECTS.find((p) => p.key === key)?.label || key,
+      dir: value.dir || g[LEGACY_DIR_FIELD[key]] || "",
+      envs,
+    });
+  }
+
+  if (projects.length === 0) {
+    projects.push(
+      ...defaultProjects().map((p) => ({ ...p, dir: g[LEGACY_DIR_FIELD[p.key]] || "" }))
+    );
+  }
+
+  return {
+    global: { secretId: g.secretId ?? "", secretKey: g.secretKey ?? "" },
+    projects,
+  };
+}
+
+/** 序列化为文件/存储格式；导出模板时不带密钥 */
+function serializeConfig(config: AllConfig, withSecrets: boolean) {
+  const projects: Record<string, { label: string; dir: string; envs: Record<string, EnvConfig> }> = {};
+  for (const p of config.projects) {
+    projects[p.key] = { label: p.label, dir: p.dir, envs: p.envs };
+  }
+  return {
+    version: CONFIG_VERSION,
+    global: {
+      secretId: withSecrets ? config.global.secretId : "",
+      secretKey: withSecrets ? config.global.secretKey : "",
+    },
+    projects,
+  };
 }
 
 function loadAllConfig(): AllConfig {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const g = parsed.global ?? {};
-      return {
-        global: { ...defaultGlobal(), ...g },
-        projects: parsed.projects ?? {},
-      };
-    }
-  } catch {}
-  const projects: Record<string, Record<string, EnvConfig>> = {};
-  for (const p of PROJECT_GROUPS) {
-    projects[p.key] = {};
-    for (const e of ENVIRONMENTS) {
-      projects[p.key][e.key] = defaultEnvConfig();
-    }
+  for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = parseConfig(JSON.parse(raw));
+      if (parsed) return parsed;
+    } catch {}
   }
-  return { global: defaultGlobal(), projects };
+  return { global: { secretId: "", secretKey: "" }, projects: defaultProjects() };
 }
 
 function saveAllConfig(config: AllConfig) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeConfig(config, true)));
 }
 
 type DeployStatus = "idle" | "running" | "success" | "error";
@@ -148,28 +225,67 @@ export default function Weixin() {
     setConfig((prev) => ({ ...prev, global: { ...prev.global, [field]: value } }));
   };
 
-  const updateEnv = (projectKey: string, envKey: string, field: keyof EnvConfig, value: string) => {
+  const updateProject = (projectKey: string, field: "label" | "dir", value: string) => {
     setConfig((prev) => ({
       ...prev,
-      projects: {
-        ...prev.projects,
-        [projectKey]: {
-          ...prev.projects[projectKey],
-          [envKey]: { ...prev.projects[projectKey][envKey], [field]: value },
-        },
-      },
+      projects: prev.projects.map((p) => (p.key === projectKey ? { ...p, [field]: value } : p)),
     }));
   };
 
-  const handleSelectDir = async (field: keyof GlobalConfig) => {
-    const selected = await open({ directory: true, multiple: false });
-    if (selected) updateGlobal(field, selected as string);
+  const updateEnv = (projectKey: string, envKey: string, field: keyof EnvConfig, value: string) => {
+    setConfig((prev) => ({
+      ...prev,
+      projects: prev.projects.map((p) =>
+        p.key === projectKey
+          ? { ...p, envs: { ...p.envs, [envKey]: { ...(p.envs[envKey] ?? defaultEnvConfig()), [field]: value } } }
+          : p
+      ),
+    }));
   };
 
-  const projectDirMap: Record<string, keyof GlobalConfig> = {
-    mango: "mangoDir",
-    agent: "agentDir",
-    order: "orderDir",
+  const handleSelectDir = async (projectKey: string) => {
+    const selected = await open({ directory: true, multiple: false });
+    if (selected) updateProject(projectKey, "dir", selected as string);
+  };
+
+  const addProject = () => {
+    setConfig((prev) => {
+      let index = prev.projects.length + 1;
+      while (prev.projects.some((p) => p.key === `project${index}`)) index++;
+      const created: ProjectConfig = {
+        key: `project${index}`,
+        label: `新项目 ${index}`,
+        dir: "",
+        envs: defaultEnvs(),
+      };
+      return { ...prev, projects: [...prev.projects, created] };
+    });
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「添加项目」",
+      status: "info",
+      detail: "新增一个部署项目",
+    });
+  };
+
+  const removeProject = async (projectKey: string) => {
+    const target = config.projects.find((p) => p.key === projectKey);
+    if (!target) return;
+    const ok = await confirmDialog(`确定删除「${target.label}」及其全部环境配置吗？`, {
+      title: "删除项目",
+      kind: "warning",
+    });
+    if (!ok) return;
+    setConfig((prev) => ({ ...prev, projects: prev.projects.filter((p) => p.key !== projectKey) }));
+    setSessions((prev) => prev.filter((s) => s.projectKey !== projectKey));
+    logOperation({
+      page: LOG_PAGE,
+      pageLabel: LOG_PAGE_LABEL,
+      action: "点击「删除项目」",
+      status: "info",
+      detail: `删除项目：${target.label}`,
+    });
   };
 
   const removeSession = useCallback((id: string) => {
@@ -208,12 +324,12 @@ export default function Weixin() {
 
   const handleDeploy = async (projectKey: string, envKey: string) => {
     const g = config.global;
-    const env = config.projects[projectKey]?.[envKey];
-    if (!env) return;
+    const project = config.projects.find((p) => p.key === projectKey);
+    const env = project?.envs[envKey];
+    if (!project || !env) return;
 
-    const dirField = projectDirMap[projectKey];
-    const projectDir = g[dirField] as string;
-    const projectLabel = PROJECT_GROUPS.find((p) => p.key === projectKey)?.label ?? projectKey;
+    const projectDir = project.dir;
+    const projectLabel = project.label;
     const envLabel = ENVIRONMENTS.find((e) => e.key === envKey)?.label ?? envKey;
     const deployTarget = `${projectLabel} · ${envLabel}`;
 
@@ -337,55 +453,56 @@ export default function Weixin() {
       if (!selected) return;
 
       const content = await invoke<string>("read_text_file", { path: selected });
-      const imported = JSON.parse(content) as AllConfig;
+      const imported = parseConfig(JSON.parse(content));
 
-      if (!imported.global || !imported.projects) {
-        showError("JSON 格式不正确，缺少 global 或 projects 字段");
+      if (!imported) {
+        showError("JSON 格式不正确，缺少 projects 字段");
         logOperation({
           page: LOG_PAGE,
           pageLabel: LOG_PAGE_LABEL,
           action: "点击「导入配置」",
           status: "error",
-          detail: "JSON 格式不正确，缺少 global 或 projects 字段",
+          detail: "JSON 格式不正确，缺少 projects 字段",
         });
         return;
       }
 
-      const ig = imported.global ?? {};
-      const merged: AllConfig = {
-        global: {
-          mangoDir: ig.mangoDir || config.global.mangoDir || "",
-          agentDir: ig.agentDir || config.global.agentDir || "",
-          orderDir: ig.orderDir || config.global.orderDir || "",
-          secretId: ig.secretId || config.global.secretId || "",
-          secretKey: ig.secretKey || config.global.secretKey || "",
-        },
-        projects: { ...config.projects },
-      };
-
-      for (const p of PROJECT_GROUPS) {
-        if (!imported.projects?.[p.key]) continue;
-        for (const e of ENVIRONMENTS) {
-          const src = imported.projects[p.key]?.[e.key];
-          if (!src) continue;
-          merged.projects[p.key] = merged.projects[p.key] ?? {};
-          merged.projects[p.key][e.key] = {
-            buildCommand: src.buildCommand || defaultEnvConfig().buildCommand,
-            cosRegion: src.cosRegion || "",
-            cosBucket: src.cosBucket || "",
-            cdnDomain: src.cdnDomain || "",
-          };
-        }
+      // 已有项目按 key 覆盖，未出现过的 key 作为新项目追加
+      const merged: ProjectConfig[] = config.projects.map((existing) => {
+        const src = imported.projects.find((p) => p.key === existing.key);
+        if (!src) return existing;
+        return {
+          key: existing.key,
+          label: src.label || existing.label,
+          dir: src.dir || existing.dir,
+          envs: { ...existing.envs, ...src.envs },
+        };
+      });
+      const addedLabels: string[] = [];
+      for (const src of imported.projects) {
+        if (merged.some((p) => p.key === src.key)) continue;
+        merged.push(src);
+        addedLabels.push(src.label);
       }
 
-      setConfig(merged);
-      showSuccess("配置导入成功！");
+      setConfig({
+        global: {
+          secretId: imported.global.secretId || config.global.secretId,
+          secretKey: imported.global.secretKey || config.global.secretKey,
+        },
+        projects: merged,
+      });
+
+      const detail = addedLabels.length
+        ? `配置导入成功，新增项目：${addedLabels.join("、")}`
+        : "配置导入成功";
+      showSuccess(`${detail}！`);
       logOperation({
         page: LOG_PAGE,
         pageLabel: LOG_PAGE_LABEL,
         action: "点击「导入配置」",
         status: "success",
-        detail: "配置导入成功",
+        detail,
       });
     } catch (err) {
       showError(`导入失败: ${err}`);
@@ -395,6 +512,39 @@ export default function Weixin() {
         action: "点击「导入配置」",
         status: "error",
         detail: `导入失败: ${err}`,
+      });
+    }
+  };
+
+  const handleExportTemplate = async () => {
+    try {
+      const path = await save({
+        defaultPath: "deploy-config-template.json",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return;
+
+      await invoke("write_text_file", {
+        path,
+        content: JSON.stringify(serializeConfig(config, false), null, 2),
+      });
+
+      showSuccess("配置模板已导出（不含密钥）");
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "点击「导出配置模板」",
+        status: "success",
+        detail: `导出到：${path}`,
+      });
+    } catch (err) {
+      showError(`导出失败: ${err}`);
+      logOperation({
+        page: LOG_PAGE,
+        pageLabel: LOG_PAGE_LABEL,
+        action: "点击「导出配置模板」",
+        status: "error",
+        detail: `导出失败: ${err}`,
       });
     }
   };
@@ -432,6 +582,14 @@ export default function Weixin() {
               <Button
                 variant="ghost"
                 size="icon-xs"
+                onClick={(e) => { e.stopPropagation(); handleExportTemplate(); }}
+                title="导出配置模板（不含密钥）"
+              >
+                <FileDown className="size-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 onClick={(e) => { e.stopPropagation(); setShowSecrets(!showSecrets); }}
                 title={showSecrets ? "隐藏密钥" : "显示密钥"}
               >
@@ -445,29 +603,48 @@ export default function Weixin() {
 
           <div
             className={`overflow-hidden transition-all duration-300 ease-out ${
-              globalOpen ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
+              globalOpen ? "max-h-[1200px] opacity-100" : "max-h-0 opacity-0"
             }`}
           >
             <div className="px-4 pb-4 flex flex-col gap-2.5">
-              {PROJECT_GROUPS.map((p) => {
-                const field = projectDirMap[p.key];
-                return (
-                  <div key={p.key} className="flex items-center gap-2">
-                    <Label className="text-xs text-muted-foreground w-[90px] shrink-0">{p.label}</Label>
-                    <Input
-                      value={config.global[field] as string}
-                      onChange={(e) => updateGlobal(field, e.target.value)}
-                      placeholder={`${p.label}项目路径`}
-                      className="text-xs h-7 flex-1 bg-white/60 dark:bg-white/[0.04]"
-                    />
-                    <Button variant="outline" size="xs" onClick={() => handleSelectDir(field)} className="shrink-0">
-                      <FolderOpen className="size-3 mr-1" />
-                      浏览
-                    </Button>
-                  </div>
-                );
-              })}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-muted-foreground">项目列表</Label>
+                <Button variant="outline" size="xs" onClick={addProject}>
+                  <Plus className="size-3 mr-1" />
+                  添加项目
+                </Button>
+              </div>
+              {config.projects.map((p) => (
+                <div key={p.key} className="flex items-center gap-2">
+                  <Input
+                    value={p.label}
+                    onChange={(e) => updateProject(p.key, "label", e.target.value)}
+                    placeholder="项目名称"
+                    title={`配置模板中的标识：${p.key}`}
+                    className="text-xs h-7 w-[110px] shrink-0 bg-white/60 dark:bg-white/[0.04]"
+                  />
+                  <Input
+                    value={p.dir}
+                    onChange={(e) => updateProject(p.key, "dir", e.target.value)}
+                    placeholder={`${p.label || "项目"}本地路径`}
+                    className="text-xs h-7 flex-1 bg-white/60 dark:bg-white/[0.04]"
+                  />
+                  <Button variant="outline" size="xs" onClick={() => handleSelectDir(p.key)} className="shrink-0">
+                    <FolderOpen className="size-3 mr-1" />
+                    浏览
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => removeProject(p.key)}
+                    title="删除该项目"
+                    className="shrink-0 text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="size-3" />
+                  </Button>
+                </div>
+              ))}
+              <div className="flex items-center gap-2 mt-1">
                 <Label className="text-xs text-muted-foreground w-[90px] shrink-0">SecretId</Label>
                 <Input
                   value={config.global.secretId}
@@ -492,11 +669,16 @@ export default function Weixin() {
         </GlassCard>
 
         {/* ===== Project Groups ===== */}
-        {PROJECT_GROUPS.map((project) => (
+        {config.projects.length === 0 && (
+          <GlassCard className="px-4 py-6 text-center text-xs text-muted-foreground">
+            暂无项目，请在「全局配置」中添加项目或导入配置模板
+          </GlassCard>
+        )}
+        {config.projects.map((project) => (
           <ProjectGroup
             key={project.key}
             project={project}
-            envConfigs={config.projects[project.key] ?? {}}
+            envConfigs={project.envs}
             statusMap={statusMap}
             runningKeys={runningKeys}
             collapseSignal={collapseAll}
@@ -665,7 +847,7 @@ function ProjectGroup({
   onUpdateEnv,
   onDeploy,
 }: {
-  project: (typeof PROJECT_GROUPS)[number];
+  project: ProjectConfig;
   envConfigs: Record<string, EnvConfig>;
   statusMap: Record<string, DeployStatus>;
   runningKeys: string[];
