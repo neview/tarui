@@ -466,20 +466,200 @@ async fn call_tencent_cdn_api(
     Ok(json)
 }
 
+// ==================== 云密钥存储 ====================
+
+// 腾讯云密钥存放在操作系统的凭证管理器里（Windows 凭据管理器 / macOS Keychain /
+// Linux Secret Service），前端只能写入和查询是否已配置，拿不到明文。
+const CREDENTIAL_SERVICE: &str = "com.tauri-app.tauri-app";
+const TENCENT_CREDENTIAL_ACCOUNT: &str = "tencent-cloud";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TencentCredentials {
+    secret_id: String,
+    secret_key: String,
+}
+
+#[derive(serde::Serialize)]
+struct CredentialStatus {
+    configured: bool,
+    /// 打码后的 SecretId，只用于让界面显示当前是哪个账号
+    secret_id_hint: String,
+}
+
+fn tencent_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(CREDENTIAL_SERVICE, TENCENT_CREDENTIAL_ACCOUNT)
+        .map_err(|e| format!("无法访问系统凭证管理器: {e}"))
+}
+
+fn mask_secret_id(secret_id: &str) -> String {
+    let chars: Vec<char> = secret_id.chars().collect();
+    if chars.len() <= 12 {
+        return "*".repeat(chars.len());
+    }
+    let head: String = chars[..8].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}{}{tail}", "*".repeat(chars.len() - 12))
+}
+
+fn read_tencent_credentials() -> Result<Option<TencentCredentials>, String> {
+    match tencent_entry()?.get_password() {
+        Ok(raw) => serde_json::from_str::<TencentCredentials>(&raw)
+            .map(Some)
+            .map_err(|_| "系统凭证管理器中的腾讯云密钥已损坏，请重新填写".to_string()),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("读取腾讯云密钥失败: {e}")),
+    }
+}
+
+#[tauri::command]
+async fn save_tencent_credentials(
+    secret_id: String,
+    secret_key: String,
+) -> Result<CredentialStatus, String> {
+    let secret_id = secret_id.trim().to_string();
+    let secret_key = secret_key.trim().to_string();
+    if secret_id.is_empty() || secret_key.is_empty() {
+        return Err("SecretId 和 SecretKey 都不能为空".to_string());
+    }
+
+    let payload = serde_json::to_string(&TencentCredentials {
+        secret_id: secret_id.clone(),
+        secret_key,
+    })
+    .map_err(|e| format!("序列化密钥失败: {e}"))?;
+
+    tencent_entry()?
+        .set_password(&payload)
+        .map_err(|e| format!("写入系统凭证管理器失败: {e}"))?;
+
+    Ok(CredentialStatus {
+        configured: true,
+        secret_id_hint: mask_secret_id(&secret_id),
+    })
+}
+
+#[tauri::command]
+async fn get_tencent_credentials_status() -> Result<CredentialStatus, String> {
+    match read_tencent_credentials()? {
+        Some(c) => Ok(CredentialStatus {
+            configured: true,
+            secret_id_hint: mask_secret_id(&c.secret_id),
+        }),
+        None => Ok(CredentialStatus {
+            configured: false,
+            secret_id_hint: String::new(),
+        }),
+    }
+}
+
+#[tauri::command]
+async fn delete_tencent_credentials() -> Result<(), String> {
+    match tencent_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("删除腾讯云密钥失败: {e}")),
+    }
+}
+
 // ==================== 部署命令 ====================
+
+/// 一次部署里的单个上传目标。微前端项目会有多个产物目录，各自落到桶里不同前缀下。
+#[derive(serde::Deserialize, Clone)]
+struct DeployTarget {
+    /// 日志里显示的名字，如 base-app / legacy / new-app
+    name: String,
+    /// 产物目录，相对项目根目录
+    dist_dir: String,
+    /// COS 对象 key 前缀，空串表示直接挂到桶根；非空时必须以 / 结尾
+    #[serde(default)]
+    key_prefix: String,
+}
 
 #[derive(serde::Deserialize)]
 struct DeployParams {
     deploy_id: String,
     project_dir: String,
     build_command: Option<String>,
-    cos_secret_id: String,
-    cos_secret_key: String,
+    /// 构建产物目录，相对项目根目录；为空时按 dist 处理
+    #[serde(default)]
+    dist_dir: Option<String>,
+    /// 多产物上传目标；为空时退化成 dist_dir 的单目标上传
+    #[serde(default)]
+    targets: Option<Vec<DeployTarget>>,
     cos_region: String,
     cos_bucket: String,
-    cdn_secret_id: String,
-    cdn_secret_key: String,
     cdn_domain: Option<String>,
+}
+
+impl DeployParams {
+    /// 统一成目标列表：显式配了 targets 就用它，否则把 dist_dir 包装成单个挂到桶根的目标。
+    fn resolved_targets(&self) -> Vec<DeployTarget> {
+        if let Some(targets) = self.targets.as_ref().filter(|t| !t.is_empty()) {
+            return targets
+                .iter()
+                .map(|t| DeployTarget {
+                    name: t.name.clone(),
+                    dist_dir: t.dist_dir.clone(),
+                    key_prefix: normalize_key_prefix(&t.key_prefix),
+                })
+                .collect();
+        }
+
+        let dist_dir = self
+            .dist_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("dist");
+
+        vec![DeployTarget {
+            name: dist_dir.to_string(),
+            dist_dir: dist_dir.to_string(),
+            key_prefix: String::new(),
+        }]
+    }
+}
+
+/// 前缀统一成 `foo/bar/` 的形式：去掉前导 /，补上尾部 /，空串保持空串。
+fn normalize_key_prefix(raw: &str) -> String {
+    let trimmed = raw.trim().replace('\\', "/");
+    let trimmed = trimmed.trim_matches('/');
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", trimmed)
+    }
+}
+
+/// 按文件类型给出缓存策略：入口 HTML 必须不缓存，带 hash 的静态资源可以长缓存。
+fn cache_control_for(rel_path: &str) -> &'static str {
+    let p = rel_path.replace('\\', "/").to_lowercase();
+    if p.ends_with(".html") {
+        "no-cache, no-store, must-revalidate"
+    } else if p.ends_with(".json") {
+        "no-cache, must-revalidate"
+    } else if p.starts_with("assets/") || p.contains("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "public, max-age=3600"
+    }
+}
+
+/// 把用户填的产物目录拼到项目根目录上。
+/// 允许写成 `dist`、`unpackage/dist/build/web`、`\unpackage\dist\build\web` 等形式；
+/// 已经是绝对路径时直接采用。
+fn resolve_dist_path(project_path: &std::path::Path, rel: &str) -> std::path::PathBuf {
+    let rel_path = std::path::Path::new(rel);
+    if rel_path.is_absolute() {
+        return rel_path.to_path_buf();
+    }
+    let mut out = project_path.to_path_buf();
+    for segment in rel.replace('\\', "/").split('/') {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        out.push(segment);
+    }
+    out
 }
 
 async fn run_shell_command(
@@ -669,6 +849,7 @@ async fn upload_single_file_to_cos(
     region: &str,
     key: &str,
     file_path: &std::path::Path,
+    cache_control: &str,
     cancel: &CancellationToken,
 ) -> Result<(), String> {
     if cancel.is_cancelled() {
@@ -698,11 +879,14 @@ async fn upload_single_file_to_cos(
 
         // 显式设置 Content-Length，避免空文件 (如 Element Plus 按需生成的空 CSS)
         // 在 HTTP/2 下被省略该头导致 COS 返回 411 Length Required
+        //
+        // Cache-Control 不在 q-header-list 里（只签了 host），加这个头不影响签名
         let send_fut = client
             .put(&url)
             .header("Authorization", &authorization)
             .header("Content-Type", &content_type)
             .header("Content-Length", body.len().to_string())
+            .header("Cache-Control", cache_control)
             .body(body.clone())
             .send();
 
@@ -750,6 +934,7 @@ async fn upload_dir_to_cos(
     bucket: &str,
     region: &str,
     dist_path: &std::path::Path,
+    key_prefix: &str,
     cancel: &CancellationToken,
 ) -> Result<(), String> {
     if secret_id.trim().is_empty()
@@ -775,7 +960,7 @@ async fn upload_dir_to_cos(
 
     let total = files.len();
     if total == 0 {
-        return Err("dist 目录为空，没有可上传的文件".to_string());
+        return Err("产物目录为空，没有可上传的文件".to_string());
     }
     let _ = app.emit(event, format!("发现 {} 个文件待上传", total));
 
@@ -784,73 +969,91 @@ async fn upload_dir_to_cos(
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
-    let concurrency = 8usize;
-    let semaphore = Arc::new(Semaphore::new(concurrency));
+    // 入口 HTML 单独放到最后一批：先把静态资源铺齐，避免用户在发版途中
+    // 拿到新 HTML 却加载到还没上传完的 JS/CSS。
+    let (html_files, asset_files): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|(_, key)| key.to_lowercase().ends_with(".html"));
+
     let done_counter = Arc::new(AtomicU32::new(0));
-
-    let mut handles = Vec::with_capacity(total);
-    for (abs_path, key) in files {
-        let sem = semaphore.clone();
-        let client = client.clone();
-        let secret_id = secret_id.to_string();
-        let secret_key = secret_key.to_string();
-        let bucket = bucket.to_string();
-        let region = region.to_string();
-        let app = app.clone();
-        let event = event.to_string();
-        let counter = done_counter.clone();
-        let cancel = cancel.clone();
-
-        let handle = tokio::spawn(async move {
-            if cancel.is_cancelled() {
-                return Err("已取消".to_string());
-            }
-            let _permit = sem.acquire().await.map_err(|e| format!("并发控制失败: {}", e))?;
-            upload_single_file_to_cos(
-                &client,
-                &secret_id,
-                &secret_key,
-                &bucket,
-                &region,
-                &key,
-                &abs_path,
-                &cancel,
-            )
-            .await
-            .map_err(|e| format!("上传 {} 失败: {}", key, e))?;
-
-            let done = counter.fetch_add(1, Ordering::SeqCst) + 1;
-            let _ = app.emit(
-                event.as_str(),
-                format!("  [{}/{}] ✓ {}", done, total, key),
-            );
-            Ok::<(), String>(())
-        });
-        handles.push(handle);
-    }
-
     let mut errors: Vec<String> = Vec::new();
-    let mut cancelled_count: usize = 0;
-    for h in handles {
-        match h.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                if e.contains("已取消") {
-                    cancelled_count += 1;
-                } else {
-                    errors.push(e);
+
+    for batch in [asset_files, html_files] {
+        if batch.is_empty() {
+            continue;
+        }
+        if cancel.is_cancelled() {
+            return Err("已取消".to_string());
+        }
+
+        let concurrency = 8usize;
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let mut handles = Vec::with_capacity(batch.len());
+
+        for (abs_path, rel_key) in batch {
+            let sem = semaphore.clone();
+            let client = client.clone();
+            let secret_id = secret_id.to_string();
+            let secret_key = secret_key.to_string();
+            let bucket = bucket.to_string();
+            let region = region.to_string();
+            let app = app.clone();
+            let event = event.to_string();
+            let counter = done_counter.clone();
+            let cancel = cancel.clone();
+            let key = format!("{}{}", key_prefix, rel_key);
+
+            let handle = tokio::spawn(async move {
+                if cancel.is_cancelled() {
+                    return Err("已取消".to_string());
                 }
+                let _permit = sem.acquire().await.map_err(|e| format!("并发控制失败: {}", e))?;
+                upload_single_file_to_cos(
+                    &client,
+                    &secret_id,
+                    &secret_key,
+                    &bucket,
+                    &region,
+                    &key,
+                    &abs_path,
+                    cache_control_for(&rel_key),
+                    &cancel,
+                )
+                .await
+                .map_err(|e| format!("上传 {} 失败: {}", key, e))?;
+
+                let done = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                let _ = app.emit(
+                    event.as_str(),
+                    format!("  [{}/{}] ✓ {}", done, total, key),
+                );
+                Ok::<(), String>(())
+            });
+            handles.push(handle);
+        }
+
+        for h in handles {
+            match h.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    if !e.contains("已取消") {
+                        errors.push(e);
+                    }
+                }
+                Err(e) => errors.push(format!("任务调度失败: {}", e)),
             }
-            Err(e) => errors.push(format!("任务调度失败: {}", e)),
+        }
+
+        // 如果是用户主动取消，返回统一的取消错误
+        if cancel.is_cancelled() {
+            return Err("已取消".to_string());
+        }
+
+        // 静态资源没传完就别覆盖 HTML，否则线上会指向缺失的资源
+        if !errors.is_empty() {
+            break;
         }
     }
-
-    // 如果是用户主动取消，返回统一的取消错误
-    if cancel.is_cancelled() {
-        return Err("已取消".to_string());
-    }
-
-    let _ = cancelled_count; // 未取消时忽略
 
     if !errors.is_empty() {
         const MAX_SHOWN: usize = 5;
@@ -878,6 +1081,11 @@ async fn run_build_and_deploy(app: AppHandle, params: DeployParams) -> Result<()
         return Err("目标目录中未找到 package.json".to_string());
     }
 
+    // 密钥只在这里从系统凭证管理器取出，不经过前端
+    let credentials = read_tencent_credentials()?.ok_or_else(|| {
+        "尚未配置腾讯云密钥，请在「全局配置」中填写 SecretId / SecretKey".to_string()
+    })?;
+
     let event: String = format!("deploy-log-{}", params.deploy_id);
     let event = event.as_str();
 
@@ -889,7 +1097,8 @@ async fn run_build_and_deploy(app: AppHandle, params: DeployParams) -> Result<()
     }
 
     // 包装：无论成败都记得清理 token
-    let result = run_build_and_deploy_inner(&app, event, &params, &project_path, &cancel).await;
+    let result =
+        run_build_and_deploy_inner(&app, event, &params, &credentials, &project_path, &cancel).await;
 
     {
         let mut map = DEPLOY_CANCEL_TOKENS.lock().await;
@@ -903,6 +1112,7 @@ async fn run_build_and_deploy_inner(
     app: &AppHandle,
     event: &str,
     params: &DeployParams,
+    credentials: &TencentCredentials,
     project_path: &std::path::Path,
     cancel: &CancellationToken,
 ) -> Result<(), String> {
@@ -928,12 +1138,26 @@ async fn run_build_and_deploy_inner(
             }
         })?;
 
-    let dist_path = project_path.join("dist");
-    if !dist_path.is_dir() {
-        return Err("Build 完成但未找到 dist 目录".to_string());
+    let targets = params.resolved_targets();
+    let mut resolved: Vec<(DeployTarget, std::path::PathBuf)> = Vec::new();
+    for target in targets {
+        let dist_path = resolve_dist_path(project_path, &target.dist_dir);
+        if !dist_path.is_dir() {
+            return Err(format!(
+                "Build 完成但未找到产物目录: {}（{}）",
+                dist_path.display(),
+                target.name
+            ));
+        }
+        resolved.push((target, dist_path));
     }
 
-    let _ = app.emit(event, "[1/5] Build 完成 ✓");
+    let dist_summary = resolved
+        .iter()
+        .map(|(t, _)| t.dist_dir.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    let _ = app.emit(event, format!("[1/5] Build 完成 ✓（产物目录 {}）", dist_summary));
 
     if cancel.is_cancelled() {
         return Err("已取消".to_string());
@@ -942,25 +1166,46 @@ async fn run_build_and_deploy_inner(
     // ===== Step 2: Upload to COS (native Rust, no Node.js required) =====
     let _ = app.emit(event, "[2/5] 正在上传文件到 COS...");
 
-    let clean_dist = strip_unc_prefix(&dist_path);
-    upload_dir_to_cos(
-        app,
-        event,
-        &params.cos_secret_id,
-        &params.cos_secret_key,
-        &params.cos_bucket,
-        &params.cos_region,
-        &clean_dist,
-        cancel,
-    )
-    .await
-    .map_err(|e| {
-        if e == "已取消" {
-            e
-        } else {
-            format!("COS 上传失败: {}", e)
+    let target_count = resolved.len();
+    for (idx, (target, dist_path)) in resolved.iter().enumerate() {
+        if target_count > 1 {
+            let _ = app.emit(
+                event,
+                format!(
+                    "[2/5] ({}/{}) {} → {}",
+                    idx + 1,
+                    target_count,
+                    target.dist_dir,
+                    if target.key_prefix.is_empty() {
+                        "<桶根>"
+                    } else {
+                        target.key_prefix.as_str()
+                    }
+                ),
+            );
         }
-    })?;
+
+        let clean_dist = strip_unc_prefix(dist_path);
+        upload_dir_to_cos(
+            app,
+            event,
+            &credentials.secret_id,
+            &credentials.secret_key,
+            &params.cos_bucket,
+            &params.cos_region,
+            &clean_dist,
+            &target.key_prefix,
+            cancel,
+        )
+        .await
+        .map_err(|e| {
+            if e == "已取消" {
+                e
+            } else {
+                format!("COS 上传失败（{}）: {}", target.name, e)
+            }
+        })?;
+    }
 
     let _ = app.emit(event, "[2/5] COS 上传完成 ✓");
 
@@ -981,8 +1226,8 @@ async fn run_build_and_deploy_inner(
         .to_string();
 
         call_tencent_cdn_api(
-            &params.cdn_secret_id,
-            &params.cdn_secret_key,
+            &credentials.secret_id,
+            &credentials.secret_key,
             "PurgeUrlsCache",
             &purge_url_payload,
         )
@@ -1000,8 +1245,8 @@ async fn run_build_and_deploy_inner(
         .to_string();
 
         call_tencent_cdn_api(
-            &params.cdn_secret_id,
-            &params.cdn_secret_key,
+            &credentials.secret_id,
+            &credentials.secret_key,
             "PurgePathCache",
             &purge_dir_payload,
         )
@@ -1019,8 +1264,8 @@ async fn run_build_and_deploy_inner(
         .to_string();
 
         call_tencent_cdn_api(
-            &params.cdn_secret_id,
-            &params.cdn_secret_key,
+            &credentials.secret_id,
+            &credentials.secret_key,
             "PushUrlsCache",
             &preheat_payload,
         )
@@ -2217,6 +2462,37 @@ async fn run_git_pipeline(app: AppHandle, params: RunPipelineParams) -> Result<(
     result
 }
 
+// ==================== 窗口初始定位 ====================
+
+/// 窗口底部与工作区（已排除任务栏）底边的间距，单位为逻辑像素。
+const WINDOW_BOTTOM_MARGIN: f64 = 16.0;
+
+/// 把窗口摆到当前显示器工作区的「底部居中」。
+/// 全程使用物理像素，并以 work_area 为基准，避免多显示器 / 高 DPI / 任务栏导致的偏移。
+fn place_window_bottom_center(window: &tauri::WebviewWindow) {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else { return };
+
+    let Ok(win_size) = window.outer_size() else {
+        return;
+    };
+
+    let area = monitor.work_area();
+    let margin = (WINDOW_BOTTOM_MARGIN * monitor.scale_factor()).round() as i32;
+
+    let x = area.position.x + (area.size.width as i32 - win_size.width as i32) / 2;
+    let y = area.position.y + area.size.height as i32 - win_size.height as i32 - margin;
+
+    let _ = window.set_position(PhysicalPosition::new(
+        x.max(area.position.x),
+        y.max(area.position.y),
+    ));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2232,6 +2508,9 @@ pub fn run() {
             run_release_version,
             run_build_and_deploy,
             cancel_deploy,
+            save_tencent_credentials,
+            get_tencent_credentials_status,
+            delete_tencent_credentials,
             read_text_file,
             write_text_file,
             append_operation_log,
@@ -2246,17 +2525,11 @@ pub fn run() {
             cancel_git_pipeline
         ])
         .setup(|app| {
-            let window = app.get_webview_window("main").unwrap();
-            if let Some(monitor) = window.current_monitor().ok().flatten() {
-                let screen = monitor.size();
-                let scale = monitor.scale_factor();
-                let win_size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(1000, 700));
-                let x = ((screen.width as f64 - win_size.width as f64) / 2.0) as i32;
-                let y = (screen.height as f64 / scale - win_size.height as f64 / scale - 48.0) as i32;
-                let _ = window.set_position(PhysicalPosition::new(
-                    (x as f64 * scale) as i32,
-                    (y as f64 * scale) as i32,
-                ));
+            // 窗口在配置里以隐藏状态创建，定位完成后再显示，避免先在默认位置闪一下再跳到目标位置
+            if let Some(window) = app.get_webview_window("main") {
+                place_window_bottom_center(&window);
+                let _ = window.show();
+                let _ = window.set_focus();
             }
             Ok(())
         })

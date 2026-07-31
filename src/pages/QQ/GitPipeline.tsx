@@ -130,6 +130,27 @@ interface RepoMeta {
   lastMessage?: string;
 }
 
+/**
+ * 一键提交的失败/取消结果。
+ * 失败时工作区可能已经变干净（比如 commit 成功、push 失败），
+ * 靠它把卡片留在「待提交」栏里并显示失败原因，而不是被当成已完成清掉。
+ */
+interface RunOutcome {
+  status: "failed" | "cancelled";
+  /** 简要原因，优先取失败步骤那一行日志 */
+  reason: string;
+  /** 失败步骤前后的关键输出，方便日志被清空后仍能看到原因 */
+  detail: string[];
+  presetName: string;
+  at: number;
+}
+
+interface PipelineRunSummary {
+  succeeded: string[];
+  failed: string[];
+  cancelled: string[];
+}
+
 // ==================== Constants ====================
 
 const REPOS_KEY = "douyin-git-repos-v1";
@@ -142,6 +163,10 @@ const SCANNED_REPOS_KEY = "douyin-git-scanned-repos-v1";
 const SKIP_LIST_KEY = "douyin-git-skip-list-v1";
 const STATUSES_KEY = "douyin-git-statuses-v1";
 const SECTIONS_OPEN_KEY = "douyin-git-sections-open-v1";
+const RUN_RESULTS_KEY = "douyin-git-run-results-v1";
+
+/** 失败详情最多保留几行输出 */
+const OUTCOME_DETAIL_LINES = 8;
 
 const DEFAULT_SCAN_DEPTH = 3;
 const SCAN_DEPTH_OPTIONS = [1, 2, 3, 4, 5];
@@ -269,6 +294,29 @@ function loadStatuses(): Record<string, GitStatus> {
   }
 }
 
+function loadRunResults(): Record<string, RunOutcome> {
+  try {
+    const raw = localStorage.getItem(RUN_RESULTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, RunOutcome> = {};
+    Object.entries(parsed as Record<string, unknown>).forEach(([path, value]) => {
+      const v = value as Partial<RunOutcome> | null;
+      if (!v || (v.status !== "failed" && v.status !== "cancelled")) return;
+      out[path] = {
+        status: v.status,
+        reason: typeof v.reason === "string" ? v.reason : "执行失败",
+        detail: Array.isArray(v.detail) ? v.detail.filter((l): l is string => typeof l === "string") : [],
+        presetName: typeof v.presetName === "string" ? v.presetName : "",
+        at: typeof v.at === "number" ? v.at : Date.now(),
+      };
+    });
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /** 工作区改动文件总数 */
 function changeCount(status?: GitStatus): number {
   if (!status || !status.is_repo) return 0;
@@ -339,6 +387,29 @@ function statusBadgeColor(code: string): string {
 function getRepoName(path: string): string {
   const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
+}
+
+/** 后端的仓库级失败标记（步骤级失败是缩进的 "  ✗ 失败"，可能被 continueOnError 放过） */
+function isRepoFailureLine(line: string): boolean {
+  return line.startsWith("✗") && (line.includes("执行失败") || line.includes("目录不存在"));
+}
+
+/** 从失败日志里提炼一句简短原因 */
+function buildFailureReason(failureLines: string[], fallback: string): string {
+  const stepLine = failureLines.find((l) => !isRepoFailureLine(l)) ?? failureLines[0];
+  const raw = (stepLine ?? "").replace(/^✗\s*/, "").trim();
+  if (!raw) return fallback;
+  const m = /^失败\s+exit=(-?\d+)\s*\((.+)\)$/.exec(raw);
+  if (m) return `步骤「${m[2]}」失败（exit ${m[1]}）`;
+  return raw;
+}
+
+function formatOutcomeTime(at: number): string {
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const sameDay = new Date().toDateString() === d.toDateString();
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return sameDay ? time : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}`;
 }
 
 // ==================== Toast ====================
@@ -1110,6 +1181,9 @@ interface RepoCardProps {
   messageError?: boolean;
   logs: string[];
   onClearLogs: () => void;
+  /** 上次一键提交的失败/取消结果，有值时卡片会保留在待提交栏并显示失败态 */
+  outcome?: RunOutcome;
+  onDismissOutcome: () => void;
   isDragging?: boolean;
 }
 
@@ -1133,6 +1207,8 @@ function RepoCard({
   messageError,
   logs,
   onClearLogs,
+  outcome,
+  onDismissOutcome,
   isDragging = false,
 }: RepoCardProps) {
   const [filesExpanded, setFilesExpanded] = useState(false);
@@ -1155,10 +1231,17 @@ function RepoCard({
 
   const hasError = !!status?.error || (status && !status.is_repo);
   const hasChanges = !!status && status.is_repo && totalChanges > 0;
+  const runFailed = !running && outcome?.status === "failed";
+  const runCancelled = !running && outcome?.status === "cancelled";
 
   useEffect(() => {
     if (running && logs.length > 0) setLogExpanded(true);
   }, [running, logs.length]);
+
+  // 失败后自动把执行日志展开，方便直接看到出错的那一步
+  useEffect(() => {
+    if (runFailed) setLogExpanded(true);
+  }, [runFailed, outcome?.at]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -1181,8 +1264,10 @@ function RepoCard({
   // 状态优先级：运行中 / 错误 覆盖项目色，其它情况使用项目色
   const accentColor = running
     ? "from-emerald-500 to-teal-500"
-    : hasError
+    : hasError || runFailed
     ? "from-rose-500 to-red-500"
+    : runCancelled
+    ? "from-amber-500 to-orange-500"
     : projectAccent;
 
   return (
@@ -1205,6 +1290,8 @@ function RepoCard({
           ? "cursor-grabbing shadow-[0_24px_60px_-16px_rgba(15,23,42,0.45),0_0_0_2px_rgba(139,92,246,0.5)] dark:shadow-[0_24px_60px_-16px_rgba(0,0,0,0.7),0_0_0_2px_rgba(139,92,246,0.55)]"
           : "hover:shadow-[0_18px_40px_-14px_rgba(15,23,42,0.22),inset_0_1px_0_rgba(255,255,255,0.6),inset_0_0_0_1px_rgba(255,255,255,0.2)] dark:hover:shadow-[0_18px_40px_-14px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.12),inset_0_0_0_1px_rgba(255,255,255,0.06)]"}
         ${running ? "ring-1 ring-emerald-400/40 dark:ring-emerald-400/30" : ""}
+        ${runFailed ? "ring-1 ring-rose-400/50 dark:ring-rose-400/40" : ""}
+        ${runCancelled ? "ring-1 ring-amber-400/45 dark:ring-amber-400/35" : ""}
       `}
     >
       {/* 玻璃层 1：左上角镜面高光（模拟光线折射） */}
@@ -1337,6 +1424,18 @@ function RepoCard({
                 执行中
               </span>
             )}
+            {runFailed && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/25">
+                <CircleAlert size={10} />
+                提交失败
+              </span>
+            )}
+            {runCancelled && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/25">
+                <Square size={10} />
+                已取消
+              </span>
+            )}
           </div>
           <div
             className="text-[11px] text-gray-500 dark:text-white/50 truncate mt-0.5"
@@ -1448,6 +1547,74 @@ function RepoCard({
         )}
       </div>
 
+      {/* 上次执行失败 / 被取消：卡片保留在待提交栏，并把原因摆在显眼位置 */}
+      <AnimatePresence initial={false}>
+        {outcome && !running && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="mx-3.5 mb-2 overflow-hidden"
+          >
+            <div
+              className={`rounded-xl border p-2.5 ${
+                runFailed
+                  ? "bg-rose-500/10 border-rose-500/25"
+                  : "bg-amber-500/10 border-amber-500/25"
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <div
+                  className={`shrink-0 mt-0.5 ${
+                    runFailed ? "text-rose-500 dark:text-rose-300" : "text-amber-500 dark:text-amber-300"
+                  }`}
+                >
+                  {runFailed ? <CircleAlert size={13} /> : <Square size={13} />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div
+                    className={`text-[11.5px] font-semibold ${
+                      runFailed
+                        ? "text-rose-600 dark:text-rose-300"
+                        : "text-amber-600 dark:text-amber-300"
+                    }`}
+                  >
+                    {runFailed ? "上次一键提交失败" : "上次任务被取消"}
+                    <span className="ml-1.5 font-normal text-gray-500 dark:text-white/50">
+                      {formatOutcomeTime(outcome.at)}
+                      {outcome.presetName ? ` · ${outcome.presetName}` : ""}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-gray-700 dark:text-white/70 break-words">
+                    {outcome.reason}
+                  </div>
+                  {runFailed && !hasChanges && (
+                    <div className="mt-1 text-[10.5px] text-gray-500 dark:text-white/50">
+                      工作区已经干净，改动可能已提交到本地，只是后面的步骤（如推送）没成功
+                    </div>
+                  )}
+                  {outcome.detail.length > 0 && (
+                    <div className="mt-1.5 max-h-20 overflow-auto rounded-lg bg-black/[0.05] dark:bg-black/40 px-2 py-1.5 text-[10.5px] font-mono leading-relaxed text-gray-600 dark:text-white/60 whitespace-pre-wrap">
+                      {outcome.detail.map((l, i) => (
+                        <div key={i}>{l}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={onDismissOutcome}
+                  className="shrink-0 w-6 h-6 rounded-lg text-gray-500 dark:text-white/50 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] flex items-center justify-center"
+                  title="清除失败标记（不影响本地文件；工作区干净的话卡片会回到「工作区干净」栏）"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* 文件列表（可折叠） */}
       <AnimatePresence initial={false}>
         {filesExpanded && status && status.files.length > 0 && (
@@ -1549,10 +1716,14 @@ function RepoCard({
             type="button"
             onClick={onRun}
             disabled={enabledStepCount === 0 || checking}
-            className="flex-[1.2] h-8 rounded-lg bg-gradient-to-r from-violet-500 to-indigo-500 hover:from-violet-600 hover:to-indigo-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5 shadow-[0_0_12px_rgba(139,92,246,0.35)] disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            title="按预设命令顺序执行：一键提交 git"
+            className={`flex-[1.2] h-8 rounded-lg text-white text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed transition-all
+              ${runFailed
+                ? "bg-gradient-to-r from-rose-500 to-red-500 hover:from-rose-600 hover:to-red-600 shadow-[0_0_12px_rgba(244,63,94,0.35)]"
+                : "bg-gradient-to-r from-violet-500 to-indigo-500 hover:from-violet-600 hover:to-indigo-600 shadow-[0_0_12px_rgba(139,92,246,0.35)]"}
+            `}
+            title={runFailed ? "重新按预设命令顺序执行一次" : "按预设命令顺序执行：一键提交 git"}
           >
-            <Rocket size={12} /> 一键提交
+            <Rocket size={12} /> {runFailed ? "重试提交" : "一键提交"}
           </button>
         )}
       </div>
@@ -2097,6 +2268,9 @@ export default function GitPipeline() {
     }
   }, [chromeCollapsed]);
 
+  /** 一键提交失败/取消的仓库结果，用于把卡片留在待提交栏并显示失败原因 */
+  const [runResults, setRunResults] = useState<Record<string, RunOutcome>>(() => loadRunResults());
+
   /** 每个仓库独立的运行态/检测态/session/日志 */
   const [runningRepos, setRunningRepos] = useState<Set<string>>(new Set());
   const [checkingRepos, setCheckingRepos] = useState<Set<string>>(new Set());
@@ -2159,6 +2333,26 @@ export default function GitPipeline() {
     }
   }, [statuses]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(RUN_RESULTS_KEY, JSON.stringify(runResults));
+    } catch {
+      /* ignore */
+    }
+  }, [runResults]);
+
+  /** 清掉一批仓库的失败/取消标记 */
+  const clearRunResults = useCallback((paths: string[]) => {
+    if (paths.length === 0) return;
+    setRunResults((prev) => {
+      const hit = paths.filter((p) => prev[p]);
+      if (hit.length === 0) return prev;
+      const next = { ...prev };
+      hit.forEach((p) => delete next[p]);
+      return next;
+    });
+  }, []);
+
   const skipPathSet = useMemo(() => new Set(skipList.map((s) => s.path)), [skipList]);
 
   /** 把一批条目加入跳过清单（按路径去重） */
@@ -2204,16 +2398,31 @@ export default function GitPipeline() {
     });
   }, []);
 
-  /** 卡片区：工作区不干净（或尚未检测）的项目 */
+  /**
+   * 卡片区：工作区不干净（或尚未检测）的项目。
+   * 上次一键提交失败/被取消的项目也留在这里 —— 失败常发生在 commit 之后（比如 push 被拒），
+   * 此时工作区已经干净，如果只按 git 状态归类，卡片会连同失败原因一起消失。
+   */
   const visibleRepos = useMemo(
-    () => repos.filter((p) => !skipPathSet.has(p) && classifyRepo(statuses[p]) === "dirty"),
-    [repos, statuses, skipPathSet],
+    () =>
+      repos.filter(
+        (p) => !skipPathSet.has(p) && (classifyRepo(statuses[p]) === "dirty" || !!runResults[p]),
+      ),
+    [repos, statuses, skipPathSet, runResults],
   );
 
   /** 次级栏：工作区干净的项目 */
   const cleanRepos = useMemo(
-    () => repos.filter((p) => !skipPathSet.has(p) && classifyRepo(statuses[p]) === "clean"),
-    [repos, statuses, skipPathSet],
+    () =>
+      repos.filter(
+        (p) => !skipPathSet.has(p) && classifyRepo(statuses[p]) === "clean" && !runResults[p],
+      ),
+    [repos, statuses, skipPathSet, runResults],
+  );
+
+  const failedRepoCount = useMemo(
+    () => visibleRepos.filter((p) => runResults[p]?.status === "failed").length,
+    [visibleRepos, runResults],
   );
 
   const selectedRepos = useMemo(
@@ -2321,6 +2530,7 @@ export default function GitPipeline() {
       paths.forEach((p) => delete next[p]);
       return next;
     });
+    clearRunResults(paths);
 
     setConfirmRemove(null);
     const tip =
@@ -2361,6 +2571,7 @@ export default function GitPipeline() {
         paths.forEach((p) => ns.delete(p));
         return ns;
       });
+      clearRunResults(paths);
       if (!opts.silent) {
         pushToast(
           paths.length > 1
@@ -2377,7 +2588,7 @@ export default function GitPipeline() {
         detail: paths.map((p) => getRepoName(p)).join("、"),
       });
     },
-    [addToSkipList, pushToast],
+    [addToSkipList, clearRunResults, pushToast],
   );
 
   const handleBatchSkip = () => {
@@ -2471,6 +2682,7 @@ export default function GitPipeline() {
             nonGitPaths.forEach((p) => ns.delete(p));
             return ns;
           });
+          clearRunResults(Array.from(nonGitPaths));
         }
       } catch (e) {
         pushToast(`检测失败: ${e}`, "error");
@@ -2482,7 +2694,7 @@ export default function GitPipeline() {
         });
       }
     },
-    [addToSkipList, pushToast],
+    [addToSkipList, clearRunResults, pushToast],
   );
 
   /**
@@ -2526,6 +2738,8 @@ export default function GitPipeline() {
           stale.forEach((p) => delete next[p]);
           return next;
         });
+
+        clearRunResults(stale);
 
         // 手动添加的项目保持原位与原顺序，扫描结果整体替换
         setRepos((prev) => {
@@ -2571,7 +2785,7 @@ export default function GitPipeline() {
         setScanning(false);
       }
     },
-    [scanDepth, scannedRepos, skipList, addToSkipList, pushToast],
+    [scanDepth, scannedRepos, skipList, addToSkipList, clearRunResults, pushToast],
   );
 
   const handlePickRoot = async () => {
@@ -2620,6 +2834,7 @@ export default function GitPipeline() {
       stale.forEach((p) => delete next[p]);
       return next;
     });
+    clearRunResults(stale);
     setScannedRepos(new Set());
     setScanSummary(null);
     setSkipList([]);
@@ -2668,10 +2883,11 @@ export default function GitPipeline() {
     async (
       targets: string[],
       opts: { silent?: boolean } = {},
-    ): Promise<void> => {
+    ): Promise<PipelineRunSummary> => {
+      const summary: PipelineRunSummary = { succeeded: [], failed: [], cancelled: [] };
       if (targets.length === 0) {
         if (!opts.silent) pushToast("请先选择至少一个目录", "info");
-        return;
+        return summary;
       }
 
       // 校验每个仓库
@@ -2682,7 +2898,7 @@ export default function GitPipeline() {
         const enabled = preset?.steps.filter((s) => s.enabled) ?? [];
         if (enabled.length === 0) {
           pushToast(`「${getRepoName(repo)}」没有可执行的步骤`, "error");
-          return;
+          return summary;
         }
         if (!getMessage(repo).trim()) {
           emptyMsgRepos.push(repo);
@@ -2702,7 +2918,7 @@ export default function GitPipeline() {
         const name = getRepoName(emptyMsgRepos[0]);
         const rest = emptyMsgRepos.length > 1 ? ` 等 ${emptyMsgRepos.length} 个项目` : "";
         pushToast(`请先填写「${name}」${rest}的提交备注`, "error");
-        return;
+        return summary;
       }
 
       const now = new Date();
@@ -2739,10 +2955,36 @@ export default function GitPipeline() {
         resetLog(repo);
         appendLog(repo, `━━━━━━ ${repoName} · ${preset.name} ━━━━━━`);
 
+        /**
+         * 从日志里跟踪失败：出错策略为「跳过失败仓库 / 全部继续」时后端不会抛错，
+         * 只靠 invoke 的返回值会把失败当成成功。
+         */
+        const trace = {
+          repoFailed: false,
+          failures: [] as string[],
+          tail: [] as string[],
+          detail: [] as string[],
+        };
+
         const unlisten = await listen<string>(event, (ev) => {
-          appendLog(repo, ev.payload);
+          const line = ev.payload;
+          appendLog(repo, line);
+          const text = line.trim();
+          if (!text || text.includes("━━━")) return;
+          trace.tail.push(text.slice(0, 200));
+          if (trace.tail.length > OUTCOME_DETAIL_LINES) trace.tail.shift();
+          if (!text.startsWith("✗")) return;
+          trace.failures.push(text);
+          if (isRepoFailureLine(text)) {
+            trace.repoFailed = true;
+            // 快照失败发生时的输出，便于日志被清空后仍能看到原因
+            if (trace.detail.length === 0) {
+              trace.detail = trace.tail.filter((l) => !isRepoFailureLine(l));
+            }
+          }
         });
 
+        clearRunResults([repo]);
         setRunningRepos((prev) => {
           const ns = new Set(prev);
           ns.add(repo);
@@ -2751,6 +2993,17 @@ export default function GitPipeline() {
         setRepoSessions((prev) => ({ ...prev, [repo]: sessionId }));
 
         let cancelled = false;
+        let outcome: RunOutcome | null = null;
+        const markOutcome = (status: RunOutcome["status"], reason: string) => {
+          outcome = {
+            status,
+            reason,
+            detail: trace.detail.length > 0 ? trace.detail : trace.tail.slice(-OUTCOME_DETAIL_LINES),
+            presetName: preset.name,
+            at: Date.now(),
+          };
+        };
+
         try {
           await invoke("run_git_pipeline", {
             params: {
@@ -2760,19 +3013,35 @@ export default function GitPipeline() {
               onRepoError: config.onRepoError,
             },
           });
-          if (!opts.silent) pushToast(`「${repoName}」执行完成`, "success");
-          logOperation({
-            page: LOG_PAGE,
-            pageLabel: LOG_PAGE_LABEL,
-            action: `一键提交 · ${repoName}`,
-            status: "success",
-            detail: `预设「${preset.name}」执行完成，提交备注：${msg || "-"}`,
-          });
+          // 日志事件走 IPC，最后几行可能比 invoke 的返回值稍晚到，留一点时间再判定成败
+          await new Promise((r) => setTimeout(r, 150));
+          if (trace.repoFailed) {
+            const reason = buildFailureReason(trace.failures, "执行失败");
+            markOutcome("failed", reason);
+            if (!opts.silent) pushToast(`「${repoName}」提交失败：${reason}`, "error");
+            logOperation({
+              page: LOG_PAGE,
+              pageLabel: LOG_PAGE_LABEL,
+              action: `一键提交 · ${repoName}`,
+              status: "error",
+              detail: `预设「${preset.name}」执行失败：${reason}`,
+            });
+          } else {
+            if (!opts.silent) pushToast(`「${repoName}」执行完成`, "success");
+            logOperation({
+              page: LOG_PAGE,
+              pageLabel: LOG_PAGE_LABEL,
+              action: `一键提交 · ${repoName}`,
+              status: "success",
+              detail: `预设「${preset.name}」执行完成，提交备注：${msg || "-"}`,
+            });
+          }
         } catch (e) {
           const msgText = String(e);
           if (msgText.includes("已取消")) {
             cancelled = true;
             appendLog(repo, "✗ 已取消");
+            markOutcome("cancelled", "任务已取消");
             pushToast(`「${repoName}」已取消`, "info");
             logOperation({
               page: LOG_PAGE,
@@ -2782,8 +3051,10 @@ export default function GitPipeline() {
               detail: "任务已取消",
             });
           } else {
+            const reason = buildFailureReason(trace.failures, msgText);
             appendLog(repo, `✗ 失败: ${msgText}`);
-            if (!opts.silent) pushToast(`「${repoName}」执行失败`, "error");
+            markOutcome("failed", reason);
+            if (!opts.silent) pushToast(`「${repoName}」提交失败：${reason}`, "error");
             logOperation({
               page: LOG_PAGE,
               pageLabel: LOG_PAGE_LABEL,
@@ -2794,6 +3065,14 @@ export default function GitPipeline() {
           }
         } finally {
           unlisten();
+          const settled = outcome as RunOutcome | null;
+          if (settled) {
+            setRunResults((prev) => ({ ...prev, [repo]: settled }));
+            if (settled.status === "failed") summary.failed.push(repo);
+            else summary.cancelled.push(repo);
+          } else {
+            summary.succeeded.push(repo);
+          }
           setRunningRepos((prev) => {
             const ns = new Set(prev);
             ns.delete(repo);
@@ -2810,6 +3089,8 @@ export default function GitPipeline() {
         // 批量模式下，按出错策略决定是否继续
         if (cancelled && config.onRepoError === "stop-all") break;
       }
+
+      return summary;
     },
     [
       config,
@@ -2818,6 +3099,7 @@ export default function GitPipeline() {
       statuses,
       resetLog,
       appendLog,
+      clearRunResults,
       runCheckFor,
       pushToast,
     ],
@@ -2878,14 +3160,21 @@ export default function GitPipeline() {
     setBatchRunning(true);
     batchSessionRef.current = genId();
     try {
-      await runPipelineFor(targets, { silent: true });
-      pushToast(`批量任务完成（${targets.length} 个仓库）`, "success");
+      const summary = await runPipelineFor(targets, { silent: true });
+      const parts = [`成功 ${summary.succeeded.length}`];
+      if (summary.failed.length > 0) parts.push(`失败 ${summary.failed.length}`);
+      if (summary.cancelled.length > 0) parts.push(`取消 ${summary.cancelled.length}`);
+      const detail = `批量任务结束（${targets.length} 个仓库）：${parts.join("，")}`;
+      pushToast(detail, summary.failed.length > 0 ? "error" : "success");
       logOperation({
         page: LOG_PAGE,
         pageLabel: LOG_PAGE_LABEL,
         action: "批量提交",
-        status: "success",
-        detail: `批量任务完成（${targets.length} 个仓库）`,
+        status: summary.failed.length > 0 ? "error" : "success",
+        detail:
+          summary.failed.length > 0
+            ? `${detail}；失败项目：${summary.failed.map((p) => getRepoName(p)).join("、")}`
+            : detail,
       });
     } finally {
       setBatchRunning(false);
@@ -3017,6 +3306,14 @@ export default function GitPipeline() {
                 <span>
                   待提交 <span className="font-semibold text-amber-500">{visibleRepos.length}</span>
                 </span>
+                {failedRepoCount > 0 && (
+                  <>
+                    <span className="text-gray-300 dark:text-white/20">·</span>
+                    <span title="上次一键提交失败，卡片会保留在待提交栏">
+                      提交失败 <span className="font-semibold text-rose-500">{failedRepoCount}</span>
+                    </span>
+                  </>
+                )}
                 <span className="text-gray-300 dark:text-white/20">·</span>
                 <span>
                   改动文件 <span className="font-semibold text-violet-500">{totalChangesAllRepos}</span>
@@ -3311,6 +3608,12 @@ export default function GitPipeline() {
             count={visibleRepos.length}
             action={
               <div className="flex items-center gap-2 text-[11px] text-gray-500 dark:text-white/50">
+                {failedRepoCount > 0 && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/25 font-medium">
+                    <CircleAlert size={11} />
+                    {failedRepoCount} 个提交失败
+                  </span>
+                )}
                 {scanSummary && (
                   <span title="最近一次扫描结果">
                     扫描到 {scanSummary.total} 个 git 项目
@@ -3410,6 +3713,8 @@ export default function GitPipeline() {
                   messageError={messageErrorRepos.has(p)}
                   logs={repoLogs[p] ?? []}
                   onClearLogs={() => resetLog(p)}
+                  outcome={runResults[p]}
+                  onDismissOutcome={() => clearRunResults([p])}
                 />
               ))}
             </div>

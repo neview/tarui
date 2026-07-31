@@ -40,4 +40,5 @@ openssl = { version = "0.10", features = ["vendored"] }
 urlencoding = "2"
 mime_guess = "2"
 walkdir = "2"
+keyring = "4.1.5"
 

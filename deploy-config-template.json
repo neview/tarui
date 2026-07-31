@@ -1,9 +1,5 @@
 {
-  "version": 3,
-  "global": {
-    "secretId": "your-tencent-cloud-secret-id",
-    "secretKey": "your-tencent-cloud-secret-key"
-  },
+  "version": 4,
   "projects": {
     "mango": {
       "label": "芒果总后台",
