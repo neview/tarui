@@ -15,8 +15,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Play, Square, Calendar } from "lucide-react";
 
+export type WxRibaoOutputFormat = "1" | "2" | "3";
+
 export interface WxRibaoFormData {
-  outputFormat: "1" | "2";
+  outputFormat: WxRibaoOutputFormat;
   indentInTheLine: boolean;
   startDate: string;
   endDate: string;
@@ -34,7 +36,7 @@ interface FormErrors {
 }
 
 export function WxRibaoForm({ onSubmit, onCancel, loading }: WxRibaoFormProps) {
-  const [outputFormat, setOutputFormat] = useState<"1" | "2">("1");
+  const [outputFormat, setOutputFormat] = useState<WxRibaoOutputFormat>("1");
   const [indentInTheLine, setIndentInTheLine] = useState(false);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -61,7 +63,7 @@ export function WxRibaoForm({ onSubmit, onCancel, loading }: WxRibaoFormProps) {
     if (onSubmit) {
       onSubmit({
         outputFormat,
-        indentInTheLine,
+        indentInTheLine: outputFormat === "3" ? false : indentInTheLine,
         startDate,
         endDate,
       });
@@ -73,7 +75,7 @@ export function WxRibaoForm({ onSubmit, onCancel, loading }: WxRibaoFormProps) {
       <div className="grid gap-4">
         <div className="grid gap-2">
           <Label>输出格式</Label>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="radio"
@@ -94,20 +96,37 @@ export function WxRibaoForm({ onSubmit, onCancel, loading }: WxRibaoFormProps) {
               />
               <span className="text-sm">不带序号</span>
             </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="outputFormat"
+                value="3"
+                checked={outputFormat === "3"}
+                onChange={() => setOutputFormat("3")}
+              />
+              <span className="text-sm">幕布</span>
+            </label>
           </div>
+          {outputFormat === "3" && (
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              生成可直接粘贴到幕布的 Markdown 嵌套列表：项目为一级，工作内容为二级。
+            </p>
+          )}
         </div>
 
-        <div className="grid gap-2">
-          <Label htmlFor="indentInTheLine" className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              id="indentInTheLine"
-              checked={indentInTheLine}
-              onChange={(e) => setIndentInTheLine(e.target.checked)}
-            />
-            <span>行内缩进</span>
-          </Label>
-        </div>
+        {outputFormat !== "3" && (
+          <div className="grid gap-2">
+            <Label htmlFor="indentInTheLine" className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                id="indentInTheLine"
+                checked={indentInTheLine}
+                onChange={(e) => setIndentInTheLine(e.target.checked)}
+              />
+              <span>行内缩进</span>
+            </Label>
+          </div>
+        )}
 
         <div className="grid gap-2">
           <Label htmlFor="startDate">开始日期 *</Label>

@@ -221,6 +221,69 @@ def deduplicate_and_sort_by_field(arr, field="A", keep_last=True, reverse=False)
     return sorted_list
 
 
+_TITLE_BRACKET_RE = re.compile(r'[【】\[\]（）()]')
+
+
+def strip_title_parens(title):
+    """去掉一级标题上的括号符号，保留括号内文字。如「【H5】」→「H5」。"""
+    raw = " ".join(str(title).split())
+    cleaned = " ".join(_TITLE_BRACKET_RE.sub('', raw).split())
+    return cleaned or raw
+
+
+def _mubu_iteration_label():
+    """用所选结束月份生成「8.1迭代」这类文案；缺省时回退到开始日期或当前月。"""
+    global strTime, endTime
+    for date_str in (endTime, strTime):
+        if not date_str:
+            continue
+        s = str(date_str).strip()[:10]
+        for fmt in ("%Y-%m-%d", "%Y-%m"):
+            try:
+                return f"{datetime.strptime(s, fmt).month}.1迭代"
+            except ValueError:
+                continue
+    return f"{datetime.now().month}.1迭代"
+
+
+def build_mubu_summary_items(report):
+    """统计幕布开头的汇总节点：新增 / 优化 / 缺陷 / 月份.1迭代。"""
+    new_count = 0
+    total_items = 0
+    for items in report.values():
+        for item in items:
+            total_items += 1
+            if str(item).startswith("新增"):
+                new_count += 1
+    return [
+        f"新需求：{new_count} 个",
+        f"优化需求：{total_items - new_count} 个",
+        "缺陷：0 个",
+        f"{_mubu_iteration_label()}：{len(report)} 个",
+    ]
+
+
+def to_mubu_markdown(report, summary_items=None):
+    """幕布大纲：一级项目名 + 二级工作内容（2 空格缩进的嵌套无序列表，无空行、无标题）。"""
+    lines = []
+    if summary_items is not None:
+        lines.append("- 汇总")
+        for item in summary_items:
+            item = " ".join(str(item).split())
+            if item:
+                lines.append(f"  - {item}")
+    for project, items in report.items():
+        project = " ".join(str(project).split())
+        if not project:
+            continue
+        lines.append(f"- {project}")
+        for item in items:
+            item = " ".join(str(item).split())
+            if item:
+                lines.append(f"  - {item}")
+    return "\n".join(lines)
+
+
 def format_data_and_copy(data, remove_duplicate=True):
     global format_type, format_indent
 
@@ -231,9 +294,48 @@ def format_data_and_copy(data, remove_duplicate=True):
                 return parts[1].strip()
         return text.strip()
 
-    type = format_type
-    if type not in [1, 2]:
-        type = 1
+    def collapse_line(text):
+        return " ".join(str(text).split())
+
+    def normalize_items(list_items, collapse=False):
+        seen = set()
+        unique_list = []
+        for li in list_items:
+            pure_text = remove_original_number(li)
+            if collapse:
+                pure_text = collapse_line(pure_text)
+            if not pure_text:
+                continue
+            if remove_duplicate:
+                if pure_text in seen:
+                    continue
+                seen.add(pure_text)
+            unique_list.append(pure_text)
+        return unique_list
+
+    fmt = format_type
+    if fmt not in (1, 2, 3):
+        fmt = 1
+
+    if fmt == 3:
+        report = {}
+        for item in data:
+            title = strip_title_parens(item.get('title', ''))
+            if not title:
+                continue
+            items = normalize_items(item.get('list', []), collapse=True)
+            if title not in report:
+                report[title] = []
+            for it in items:
+                if it not in report[title]:
+                    report[title].append(it)
+        summary_items = build_mubu_summary_items(report)
+        formatted_text = to_mubu_markdown(report, summary_items=summary_items)
+        _push_log(
+            f"数据格式化完成（幕布），{summary_items[0]}，{summary_items[1]}，"
+            f"{summary_items[3]}，共 {len(formatted_text)} 字符"
+        )
+        return formatted_text
 
     indent = format_indent
 
@@ -248,23 +350,13 @@ def format_data_and_copy(data, remove_duplicate=True):
         if not list_items:
             continue
 
-        if remove_duplicate:
-            seen = set()
-            unique_list = []
-            for li in list_items:
-                pure_text = remove_original_number(li)
-                if pure_text not in seen:
-                    seen.add(pure_text)
-                    unique_list.append(pure_text)
-            list_items = unique_list
-        else:
-            list_items = [remove_original_number(li) for li in list_items]
+        list_items = normalize_items(list_items)
 
         indent_str = "    " if indent else ""
-        if type == 1:
+        if fmt == 1:
             for idx, pure_text in enumerate(list_items, 1):
                 formatted_text += f"{indent_str}{idx}、{pure_text}\n"
-        elif type == 2:
+        elif fmt == 2:
             for pure_text in list_items:
                 formatted_text += f"{indent_str}{pure_text}\n"
 

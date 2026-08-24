@@ -1,7 +1,7 @@
 {
   "name": "Scripts",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.6.1",
   "type": "module",
   "scripts": {
     "sync:scripts": "node scripts/sync-scripts.mjs",
@@ -11,7 +11,11 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:icon": "tauri icon aaa.png"
+    "tauri:icon": "tauri icon aaa.png",
+    "release": "powershell -NoProfile -ExecutionPolicy Bypass -File ./release.ps1",
+    "release:patch": "powershell -NoProfile -ExecutionPolicy Bypass -File ./release.ps1 patch",
+    "release:minor": "powershell -NoProfile -ExecutionPolicy Bypass -File ./release.ps1 minor",
+    "release:major": "powershell -NoProfile -ExecutionPolicy Bypass -File ./release.ps1 major"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

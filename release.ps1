@@ -1,10 +1,13 @@
 ﻿# 一键发版脚本
-# 用法: .\release.ps1 1.3.0 "修复了xxx问题，新增了xxx功能"
+# 用法:
+#   .\release.ps1                              交互式，提示上一个版本并给出建议版本
+#   .\release.ps1 patch "修复了xxx问题"        自动累加修订号
+#   .\release.ps1 1.3.0 "修复了xxx问题"        指定版本号
 # 第二个参数为更新说明（可选），会显示在用户的自动更新弹窗中
 
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$Version,
+    [Parameter(Mandatory=$false)]
+    [string]$Version = "",
 
     [Parameter(Mandatory=$false)]
     [string]$Notes = ""
@@ -17,8 +20,53 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001 > $null
 
+# 以最新的 git tag 为准，没有 tag 时退回 package.json
+function Get-LastVersion {
+    $tags = git tag -l "v*.*.*"
+    if ($tags) {
+        $latest = $tags |
+            ForEach-Object { $_.TrimStart('v') } |
+            Where-Object { $_ -match '^\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_ } |
+            Select-Object -Last 1
+        if ($latest) { return $latest }
+    }
+    return (Get-Content "package.json" -Raw | ConvertFrom-Json).version
+}
+
+function Step-Version([string]$base, [string]$level) {
+    $p = $base.Split('.')
+    switch ($level) {
+        'major' { "{0}.0.0"     -f ([int]$p[0] + 1) }
+        'minor' { "{0}.{1}.0"   -f $p[0], ([int]$p[1] + 1) }
+        default { "{0}.{1}.{2}" -f $p[0], $p[1], ([int]$p[2] + 1) }
+    }
+}
+
+$last    = Get-LastVersion
+$suggest = Step-Version $last 'patch'
+
+if (-not $Version) {
+    Write-Host ""
+    Write-Host "  上一个版本: v$last" -ForegroundColor White
+    Write-Host "  建议版本  : v$suggest" -ForegroundColor Green
+    Write-Host "  直接回车使用建议版本，或输入 patch / minor / major / 自定义 x.y.z" -ForegroundColor DarkGray
+    $Version = Read-Host "  新版本号"
+    if (-not $Version) { $Version = $suggest }
+}
+
+if ($Version -in @('patch', 'minor', 'major')) {
+    $Version = Step-Version $last $Version
+}
+$Version = $Version.Trim().TrimStart('v', 'V')
+
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     Write-Host "版本号格式错误，应为 x.x.x（如 1.3.0）" -ForegroundColor Red
+    exit 1
+}
+
+if ([version]$Version -le [version]$last) {
+    Write-Host "版本号必须大于上一个版本 v$last" -ForegroundColor Red
     exit 1
 }
 

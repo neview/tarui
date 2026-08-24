@@ -3,9 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "motion/react";
 import { KuaishouCard } from "./KuaishouCard";
-import { WxRibaoFormData } from "./KuaishouForm";
+import { WxRibaoFormData, type WxRibaoOutputFormat } from "./KuaishouForm";
 import { Alert, useAlert } from "@/components/ui/alert";
-import { ScrollText, Copy, Check, Loader2, AlertCircle, Cloud, HardDrive } from "lucide-react";
+import { ScrollText, Copy, Check, Loader2, AlertCircle, Cloud, HardDrive, ListTree } from "lucide-react";
 import { Meteors } from "@/components/ui/meteors";
 import { OperationLogButton } from "@/components/OperationLog";
 import { logOperation } from "@/utils/operationLog";
@@ -18,6 +18,12 @@ const LOG_PAGE = "kuaishou";
 const LOG_PAGE_LABEL = "微信日报";
 
 const QR_TOTAL_SECONDS = 120;
+
+const OUTPUT_FORMAT_LABEL: Record<WxRibaoOutputFormat, string> = {
+  "1": "带序号",
+  "2": "不带序号",
+  "3": "幕布",
+};
 
 function getTimerColor(remaining: number): string {
   if (remaining <= 30) return "#ef4444";
@@ -100,6 +106,8 @@ export default function Kuaishou() {
   const lastLogCountRef = useRef(0);
   const qrShownRef = useRef(false);
   const unlistenRef = useRef<(() => void) | null>(null);
+  const submittedFormatRef = useRef<WxRibaoOutputFormat>("1");
+  const [resultFormat, setResultFormat] = useState<WxRibaoOutputFormat | null>(null);
 
   useEffect(() => {
     if (!qrModalOpen) return;
@@ -192,6 +200,7 @@ export default function Kuaishou() {
       switch (status) {
         case "success":
           closeQrModal();
+          setResultFormat(submittedFormatRef.current);
           if (data) {
             const entries = Array.isArray(data) ? data : [data];
             const lines = entries.flatMap((e) => e.split("\n"));
@@ -407,12 +416,15 @@ export default function Kuaishou() {
   const handleFormSubmit = async (formData: WxRibaoFormData) => {
     if (loading) return;
 
+    submittedFormatRef.current = formData.outputFormat;
+    setResultFormat(null);
+
     logOperation({
       page: LOG_PAGE,
       pageLabel: LOG_PAGE_LABEL,
       action: "点击「获取日报」",
       status: "info",
-      detail: `方式=${mode === "local" ? "本地脚本" : "远程接口"}，日期=${formData.startDate || "-"} ~ ${formData.endDate || "-"}`,
+      detail: `方式=${mode === "local" ? "本地脚本" : "远程接口"}，格式=${OUTPUT_FORMAT_LABEL[formData.outputFormat]}，日期=${formData.startDate || "-"} ~ ${formData.endDate || "-"}`,
     });
 
     if (abortRef.current) {
@@ -523,37 +535,57 @@ export default function Kuaishou() {
         </div>
         <div className="flex flex-col min-h-0 min-w-0">
           <div className="h-full min-h-0 flex flex-col">
-            <div className="flex items-center justify-between mb-3 flex-shrink-0">
-              <div className="flex items-center gap-2">
-                <ScrollText className="w-4 h-4 text-muted-foreground" />
-                <span className="text-sm font-medium text-muted-foreground">执行日志</span>
-                {loading && (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-                )}
-                <OperationLogButton page={LOG_PAGE} pageLabel={LOG_PAGE_LABEL} className="ml-1" />
-              </div>
-              {logs.length > 0 && (() => {
-                const sepIdx = logs.lastIndexOf("───────────────────");
-                const hasResult = sepIdx !== -1 && sepIdx < logs.length - 1;
-                return (
-                  <button
-                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-muted cursor-pointer"
-                    onClick={() => {
-                      const text = hasResult
-                        ? logs.slice(sepIdx + 1).join("\n")
-                        : logs.join("\n");
-                      navigator.clipboard.writeText(text);
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 2000);
-                    }}
-                  >
-                    {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    {copied ? "已复制" : hasResult ? "复制结果" : "复制"}
-                  </button>
-                );
-              })()}
-            </div>
-            <LogPanel logs={logs} loading={loading} />
+            {(() => {
+              const sepIdx = logs.lastIndexOf("───────────────────");
+              const hasResult = sepIdx !== -1 && sepIdx < logs.length - 1;
+              const isMubuResult = resultFormat === "3" && hasResult;
+              const copyLabel = isMubuResult ? "复制幕布大纲" : hasResult ? "复制结果" : "复制";
+              return (
+                <>
+                  <div className="flex items-center justify-between mb-3 flex-shrink-0">
+                    <div className="flex items-center gap-2">
+                      <ScrollText className="w-4 h-4 text-muted-foreground" />
+                      <span className="text-sm font-medium text-muted-foreground">执行日志</span>
+                      {loading && (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                      )}
+                      <OperationLogButton page={LOG_PAGE} pageLabel={LOG_PAGE_LABEL} className="ml-1" />
+                    </div>
+                    {logs.length > 0 && (
+                      <button
+                        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-muted cursor-pointer"
+                        onClick={() => {
+                          const text = hasResult
+                            ? logs.slice(sepIdx + 1).join("\n")
+                            : logs.join("\n");
+                          navigator.clipboard.writeText(text);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }}
+                      >
+                        {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        {copied ? "已复制" : copyLabel}
+                      </button>
+                    )}
+                  </div>
+                  {isMubuResult && (
+                    <div className="mb-3 flex-shrink-0 rounded-xl border border-indigo-200/80 bg-indigo-50/70 px-3 py-2.5 text-xs leading-relaxed text-indigo-950 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-100">
+                      <div className="mb-1.5 flex items-center gap-1.5 font-medium">
+                        <ListTree className="h-3.5 w-3.5" />
+                        粘贴到幕布
+                      </div>
+                      <ol className="list-decimal space-y-1 pl-4 text-indigo-900/85 dark:text-indigo-100/80">
+                        <li>点击右上角「复制幕布大纲」，或全选下方生成的 Markdown。</li>
+                        <li>打开幕布文档，点大纲空白节点（不要点顶部文档标题）。</li>
+                        <li>Ctrl+V 粘贴。</li>
+                        <li>应立即看到：项目名是一级圆点，工作内容是缩进的二级圆点。</li>
+                      </ol>
+                    </div>
+                  )}
+                  <LogPanel logs={logs} loading={loading} />
+                </>
+              );
+            })()}
           </div>
         </div>
       </div>
