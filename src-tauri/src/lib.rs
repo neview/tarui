@@ -48,29 +48,35 @@ async fn cancel_deploy(deploy_id: String) -> Result<(), String> {
     }
 }
 
-/// 在 exe 同级目录及向上 3 级目录中查找指定脚本，返回 (脚本所在目录, 脚本完整路径)。
-/// 这样无论是开发模式（exe 位于 src-tauri/target/debug）还是安装后（脚本与 exe 同级）都能定位到。
-fn resolve_script(script_name: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+/// 查找指定脚本，返回 (脚本所在目录, 脚本完整路径)。依次检查：
+/// 1. Tauri 资源目录（安装后脚本作为 bundle resource 随应用分发，见 tauri.conf.json 的 bundle.resources）
+/// 2. exe 同级及向上 3 级目录（开发模式 exe 位于 src-tauri/target/debug，向上 3 级即项目根）
+fn resolve_script(
+    app: &AppHandle,
+    script_name: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     let exe = std::env::current_exe().map_err(|e| format!("无法获取 exe 路径: {}", e))?;
     let exe_dir = exe
         .parent()
         .ok_or("无法获取 exe 所在目录")?
         .to_path_buf();
-    let candidates = [
-        exe_dir.clone(),
-        exe_dir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| exe_dir.clone()),
-        exe_dir
-            .parent()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| exe_dir.clone()),
-        exe_dir
-            .parent()
-            .and_then(|p| p.parent().and_then(|p| p.parent().map(|p| p.to_path_buf())))
-            .unwrap_or_else(|| exe_dir.clone()),
-    ];
+
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir);
+    }
+    candidates.push(exe_dir.clone());
+    let mut cur = exe_dir.clone();
+    for _ in 0..3 {
+        match cur.parent() {
+            Some(p) => {
+                cur = p.to_path_buf();
+                candidates.push(cur.clone());
+            }
+            None => break,
+        }
+    }
+
     for dir in &candidates {
         let script = dir.join(script_name);
         if script.is_file() {
@@ -84,7 +90,8 @@ fn resolve_script(script_name: &str) -> Result<(std::path::PathBuf, std::path::P
         }
     }
     Err(format!(
-        "未找到 {}，已检查: exe 同级及向上 3 级目录（如 {}）",
+        "未找到 {}，已检查: 应用资源目录、exe 同级及向上 3 级目录（如 {}）。\
+         若为旧版安装包，请将脚本复制到 exe 同级目录，或升级到包含该脚本资源的新版本",
         script_name,
         exe_dir.display()
     ))
@@ -120,7 +127,7 @@ async fn run_wx_ribao(app: AppHandle, params: WxRibaoLocalParams) -> Result<(), 
         }
     }
 
-    let (project_root, script_path) = resolve_script("wx_ribao.py")?;
+    let (project_root, script_path) = resolve_script(&app, "wx_ribao.py")?;
 
     let output_format = params
         .output_format
@@ -295,7 +302,7 @@ async fn run_release_version(
     let python_path =
         std::env::var("PYTHON_PATH").unwrap_or_else(|_| "python".to_string());
 
-    let (project_root, script_path) = resolve_script("release_version.py")?;
+    let (project_root, script_path) = resolve_script(&app, "release_version.py")?;
 
     let send_message = params
         .send_message
