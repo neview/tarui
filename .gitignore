@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# 企微日报登录态，禁止入库
+cookies.txt
+__pycache__/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

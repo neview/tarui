@@ -367,31 +367,113 @@ def format_data_and_copy(data, remove_duplicate=True):
     return formatted_text
 
 
+# 条目编号标记：「3、」或「3.」（后者不能紧跟数字，避免误伤 v3.1 / 3.5 这类文本），
+# 且必须位于块首或紧跟空白，避免把「共6、7个」这种正文内容当成编号。
+_ITEM_MARK_RE = re.compile(r'(?:^|(?<=\s))(\d{1,3})(?:、|[.．](?!\d))')
+
+
+def _split_numbered_items(body):
+    """按连续递增的编号（1、2、3…）切分条目；编号不连续或不存在时返回 None。
+
+    企微把日报正文的换行压成了空格，条目内部若本身含空格（如「封装对应的 6 个接口」、
+    「完成技术方案 v3.1，明确…」），单纯按空格切分会把一条拆成多条。编号是唯一可靠的边界。
+    """
+    chosen = []
+    expected = 1
+    for m in _ITEM_MARK_RE.finditer(body):
+        if int(m.group(1)) == expected:
+            chosen.append(m)
+            expected += 1
+    if not chosen:
+        return None
+
+    title = body[:chosen[0].start()].strip()
+    items = []
+    for i, m in enumerate(chosen):
+        end = chosen[i + 1].start() if i + 1 < len(chosen) else len(body)
+        text = body[m.end():end].strip()
+        if text:
+            items.append(text)
+    return title, items
+
+
+def _parse_block(block):
+    """解析一个项目块，返回 (title, items)。块内没有项目名时 title 为空字符串。"""
+    block = block.strip()
+    if not block:
+        return None
+
+    # 保留了真实换行的情况：第一行是项目名，其余每行一条
+    if '\n' in block:
+        lines = [ln.strip() for ln in block.split('\n') if ln.strip()]
+        if not lines:
+            return None
+        strip_mark = lambda s: _ITEM_MARK_RE.sub('', s, count=1).strip()
+        head = lines[0]
+        if _ITEM_MARK_RE.match(head):
+            return '', [strip_mark(ln) for ln in lines]
+        return head, [strip_mark(ln) for ln in lines[1:]]
+
+    parsed = _split_numbered_items(block)
+    if parsed is not None:
+        return parsed
+
+    # 没有编号可依据，只能退回按空格切分（旧行为）
+    parts = block.split()
+    if not parts:
+        return None
+    return parts[0], parts[1:]
+
+
+def parse_report_text(text):
+    """把一条日报的正文解析成 [(项目名, [条目...]), ...]。
+
+    正文格式约定：「xx：」前缀之后，项目之间用空行（被企微压成两个空格）分隔，
+    项目名在块首，其后是带编号的条目。没有项目名的块会归入前一个项目。
+    """
+    text = str(text or '')
+    if '：' in text:
+        text = text.split('：', 1)[1]
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+
+    if '\n' in text:
+        blocks = re.split(r'\n\s*\n', text)
+    else:
+        blocks = re.split(r' {2,}', text)
+
+    result = []
+    for block in blocks:
+        parsed = _parse_block(block)
+        if parsed is None:
+            continue
+        title, items = parsed
+        if not title:
+            if result:
+                result[-1][1].extend(items)
+            elif items:
+                # 首块就没有项目名，只能把第一条当项目名，保持旧行为
+                result.append((items[0], items[1:]))
+            continue
+        result.append((title, list(items)))
+    return result
+
+
 def mergeData(data):
     global _business_result
     _push_log("正在合并整理数据...")
     info = []
-    nameList = []
-    for item in data:
-        obj = item.get('showinfo', {}).get('wordings')
-        arr = obj[0].split('：')[1].split('  ')
-        for item in arr:
-            aaa = item.split(' ')
-            if len(aaa) <= 0:
-                continue
-            name = ''
-            for index, item2 in enumerate(aaa):
-                if item2 == '':
-                    continue
-                if index == 0:
-                    name = item2
-                    if item2 not in nameList:
-                        nameList.append(item2)
-                        info.append({'title': item2, 'list': []})
-                else:
-                    for item4 in info:
-                        if item4['title'] == name:
-                            item4['list'].append(item2)
+    by_title = {}
+    for entry in data:
+        wordings = (entry.get('showinfo') or {}).get('wordings') or []
+        if not wordings:
+            continue
+        for title, items in parse_report_text(wordings[0]):
+            bucket = by_title.get(title)
+            if bucket is None:
+                bucket = {'title': title, 'list': []}
+                by_title[title] = bucket
+                info.append(bucket)
+            bucket['list'].extend(items)
 
     _business_result = format_data_and_copy(info)
 
