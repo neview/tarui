@@ -16,6 +16,14 @@ dist-ssr
 cookies.txt
 __pycache__/
 
+# 万象城签到配置和本地登录态，禁止入库
+mixc_config.txt
+mixc_私密配置备份.txt
+token_cache.txt
+token_cache.json
+tokens/
+.imei_cache
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

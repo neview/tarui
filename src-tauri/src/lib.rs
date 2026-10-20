@@ -12,7 +12,7 @@ use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, PhysicalPosition, Manager};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, MutexGuard, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -384,6 +384,187 @@ async fn run_release_version(
             "未捕获到错误输出，请检查 Python 环境与依赖。".to_string()
         } else {
             format!("错误输出:\n{}", stderr_buf.trim())
+        }
+    ))
+}
+
+// ==================== 万象城积分签到（本地 mixc_api.py） ====================
+
+fn mixc_exe_dir() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法获取 exe 路径: {}", e))?;
+    exe.parent()
+        .map(|dir| dir.to_path_buf())
+        .ok_or_else(|| "无法获取 exe 所在目录".to_string())
+}
+
+/// 登录态和导入后的配置放在应用数据目录。安装包里的资源目录通常不可写。
+fn mixc_storage_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    if let Ok(dir) = app.path().app_config_dir() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
+        return Ok(dir);
+    }
+    mixc_exe_dir()
+}
+
+fn mixc_saved_config_file(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(mixc_storage_dir(app)?.join("mixc_config.txt"))
+}
+
+/// 线上安装后按这个顺序找配置：应用数据目录里导入保存的文件，其次是安装目录里用户自己放的文件。
+fn mixc_config_file(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let saved = mixc_saved_config_file(app)?;
+    if saved.is_file() {
+        return Ok(saved);
+    }
+    if let Ok(exe_dir) = mixc_exe_dir() {
+        let beside_exe = exe_dir.join("mixc_config.txt");
+        if beside_exe.is_file() {
+            return Ok(beside_exe);
+        }
+    }
+    Ok(saved)
+}
+
+#[derive(serde::Serialize)]
+struct MixcConfigInfo {
+    path: String,
+    content: String,
+    exists: bool,
+}
+
+#[tauri::command]
+fn get_mixc_config(app: AppHandle) -> Result<MixcConfigInfo, String> {
+    let path = mixc_config_file(&app)?;
+    let exists = path.is_file();
+    let content = if exists {
+        std::fs::read_to_string(&path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    Ok(MixcConfigInfo {
+        path: path.display().to_string(),
+        content,
+        exists,
+    })
+}
+
+#[tauri::command]
+fn save_mixc_config(app: AppHandle, content: String) -> Result<String, String> {
+    let path = mixc_saved_config_file(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    std::fs::write(&path, content).map_err(|e| format!("保存配置失败: {}", e))?;
+    Ok(path.display().to_string())
+}
+
+#[derive(serde::Deserialize)]
+struct MixcParams {
+    action: String,
+    account: String,
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    code: String,
+}
+
+/// 调用 mixc_api.py --cli 执行单个账号的发验证码或签到。
+/// 配置文件和登录态都放在应用配置目录，通过环境变量传给脚本。
+#[tauri::command]
+async fn run_mixc(app: AppHandle, params: MixcParams) -> Result<serde_json::Value, String> {
+    let python_path = std::env::var("PYTHON_PATH").unwrap_or_else(|_| "python".to_string());
+    let (_project_root, script_path) = resolve_script(&app, "mixc_api.py")?;
+    let config_path = mixc_config_file(&app)?;
+    if !config_path.is_file() {
+        return Err("还没有配置信息，请先导入或填写".to_string());
+    }
+    let data_dir = mixc_storage_dir(&app)?;
+    let payload = serde_json::json!({
+        "action": params.action,
+        "account": params.account,
+        "password": params.password,
+        "code": params.code,
+    })
+    .to_string();
+
+    let mut cmd = Command::new(&python_path);
+    cmd.arg(&script_path).arg("--cli");
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    cmd.env("PYTHONUTF8", "1");
+    cmd.env("MIXC_CONFIG", &config_path);
+    cmd.env("MIXC_DATA_DIR", &data_dir);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "启动 Python 进程失败: {}（请确认已安装 Python，以及 requests、pycryptodome）",
+            e
+        )
+    })?;
+
+    let mut stdin = child.stdin.take().ok_or("无法写入脚本参数")?;
+    let stdout = child.stdout.take().ok_or("无法捕获 stdout")?;
+    let stderr = child.stderr.take().ok_or("无法捕获 stderr")?;
+
+    let write_task = tokio::spawn(async move {
+        let _ = stdin.write_all(payload.as_bytes()).await;
+        let _ = stdin.shutdown().await;
+    });
+
+    let stdout_task = tokio::spawn(async move {
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        let mut result: Option<String> = None;
+        let mut log = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(rest) = line.strip_prefix("MIXC_RESULT:") {
+                result = Some(rest.trim().to_string());
+            } else if !line.trim().is_empty() {
+                log.push_str(&line);
+                log.push('\n');
+            }
+        }
+        (result, log)
+    });
+
+    let stderr_task = tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        let mut buf = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        buf
+    });
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("等待进程失败: {}", e))?;
+    let _ = write_task.await;
+    let (result_json, stdout_log) = stdout_task.await.unwrap_or((None, String::new()));
+    let stderr_buf = stderr_task.await.unwrap_or_default();
+
+    if let Some(json_str) = result_json {
+        return serde_json::from_str(&json_str)
+            .map_err(|e| format!("解析脚本结果失败: {}（原始: {}）", e, json_str));
+    }
+
+    Err(format!(
+        "脚本没有返回结果（退出码: {:?}）。{}",
+        status.code(),
+        if !stderr_buf.trim().is_empty() {
+            format!("错误输出:\n{}", stderr_buf.trim())
+        } else if !stdout_log.trim().is_empty() {
+            format!("输出:\n{}", stdout_log.trim())
+        } else {
+            "请确认已安装 Python，以及 requests、pycryptodome。".to_string()
         }
     ))
 }
@@ -2513,6 +2694,9 @@ pub fn run() {
             stop_wx_ribao,
             kill_python_script,
             run_release_version,
+            get_mixc_config,
+            save_mixc_config,
+            run_mixc,
             run_build_and_deploy,
             cancel_deploy,
             save_tencent_credentials,

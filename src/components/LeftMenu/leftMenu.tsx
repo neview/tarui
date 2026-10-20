@@ -9,6 +9,8 @@ import weixinWhite from "../../assets/1(7).png";
 import weixinDark from "../../assets/1(8).png";
 import qqWhite from "../../assets/1(9).png";
 import qqDark from "../../assets/1(10).png";
+import checkinLight from "../../assets/checkin-light.svg";
+import checkinDark from "../../assets/checkin-dark.svg";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 
@@ -16,6 +18,7 @@ interface MenuItem {
   lightIcon: string;
   darkIcon: string;
   path: string;
+  label: string;
 }
 
 export function LeftMenu() {
@@ -23,11 +26,12 @@ export function LeftMenu() {
   const location = useLocation();
   const parentRef = useRef<HTMLDivElement>(null);
   const imgList: MenuItem[] = [
-    { lightIcon: fejiWhite, darkIcon: fejiDark, path: "/feiji" },
-    { lightIcon: kuaishouWhite, darkIcon: kuaishouDark, path: "/kuaishou" },
-    { lightIcon: douyinWhite, darkIcon: douyinDark, path: "/douyin" },
-    { lightIcon: weixinWhite, darkIcon: weixinDark, path: "/weixin" },
-    { lightIcon: qqWhite, darkIcon: qqDark, path: "/qq" },
+    { lightIcon: fejiWhite, darkIcon: fejiDark, path: "/feiji", label: "飞机" },
+    { lightIcon: kuaishouWhite, darkIcon: kuaishouDark, path: "/kuaishou", label: "快手" },
+    { lightIcon: douyinWhite, darkIcon: douyinDark, path: "/douyin", label: "抖音" },
+    { lightIcon: weixinWhite, darkIcon: weixinDark, path: "/weixin", label: "微信" },
+    { lightIcon: qqWhite, darkIcon: qqDark, path: "/qq", label: "QQ" },
+    { lightIcon: checkinLight, darkIcon: checkinDark, path: "/checkin", label: "积分签到" },
   ];
   
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -72,13 +76,20 @@ export function LeftMenu() {
 
   useEffect(() => {
     if (!parentRef.current) return;
+    const currentIndex = Math.max(
+      0,
+      imgList.findIndex((item) => item.path === location.pathname)
+    );
     const parentRect = parentRef.current.getBoundingClientRect();
-    const firstItem = parentRef.current.querySelector(`img:nth-child(1)`) as HTMLImageElement;
-    if (!firstItem) return;
-    const firstItemRect = firstItem.getBoundingClientRect();
+    const target = parentRef.current.querySelectorAll("img")[currentIndex] as HTMLImageElement | undefined;
+    if (!target) return;
+    const targetRect = target.getBoundingClientRect();
     setStyle({
-      transform: `translateY(${firstItemRect.top - parentRect.top - 8}px)`,
+      transform: `translateY(${targetRect.top - parentRect.top - 8}px)`,
     });
+    setSelectedIndex(currentIndex);
+    // 只在挂载时按当前路由对齐一次，之后由点击和路由变化更新
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleClick = (e: React.MouseEvent<HTMLImageElement>, index: number) => {
@@ -116,7 +127,8 @@ export function LeftMenu() {
         <img
           key={index}
           src={getIcon(item, selectedIndex === index)}
-          alt=""
+          alt={item.label}
+          title={item.label}
           onClick={(e) => handleClick(e, index)}
           className={animatingIndex === index ? styles.scaleAnim : ""}
         />

@@ -13,6 +13,7 @@ import Kuaishou from "./pages/Kuaishou";
 import Douyin from "./pages/Douyin";
 import Weixin from "./pages/Weixin";
 import QQ from "./pages/QQ";
+import Checkin from "./pages/Checkin";
 
 function App() {
   return (
@@ -32,6 +33,7 @@ function App() {
               <Route path="/douyin" element={<Douyin />} />
               <Route path="/weixin" element={<Weixin />} />
               <Route path="/qq" element={<QQ />} />
+              <Route path="/checkin" element={<Checkin />} />
             </Routes>
           </div>
         </div>
