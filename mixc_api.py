@@ -46,6 +46,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 
@@ -579,12 +580,22 @@ def save_token(account: str, token: str) -> bool:
         return False
     path = _account_token_path(key)
     try:
+        previous = {}
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    previous = loaded
+            except Exception:
+                previous = {}
+        previous.update({
+            "account": key,
+            "token": token,
+            "saved_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
         with open(path, "w", encoding="utf-8") as f:
-            json.dump({
-                "account": key,
-                "token": token,
-                "saved_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }, f, ensure_ascii=False, indent=2)
+            json.dump(previous, f, ensure_ascii=False, indent=2)
         _write_token_index()
         return True
     except Exception as e:
@@ -606,6 +617,10 @@ def load_token(account: str):
                     "account": key,
                     "token": data["token"],
                     "saved_at": data.get("saved_at") or "",
+                    "points": data.get("points"),
+                    "lastSignPoints": data.get("lastSignPoints"),
+                    "signedToday": data.get("signedToday"),
+                    "signedDate": data.get("signedDate") or "",
                 }
         except Exception:
             pass
@@ -716,6 +731,166 @@ def query_lattice(token: str, account: str):
     return j.get("data") or {}
 
 
+def _today() -> str:
+    return datetime.date.today().isoformat()
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "y", "已签", "已签到"):
+            return True
+        if text in ("0", "false", "no", "n", "未签", "未签到"):
+            return False
+    return None
+
+
+def _already_signed(message: str) -> bool:
+    return bool(re.search(r"已签|签过|不可重复", message or ""))
+
+
+def _gain_from_sign(body) -> object:
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, dict):
+        return None
+    sign_map = data.get("signDataMap") if isinstance(data.get("signDataMap"), dict) else {}
+    for value in (sign_map.get("todayPoint"), data.get("point")):
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def parse_sign_calendar(data, today: str = ""):
+    """从签到日历里取出「今天是否已签」和最近一次签到积分。"""
+    today = today or _today()
+    today_compact = today.replace("-", "")
+    signed_today = None
+    last_point = None
+    last_day = ""
+
+    def visit(node):
+        nonlocal signed_today, last_point, last_day
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        for key in ("todaySigned", "isTodaySign", "isSignToday", "signedToday"):
+            if key in node:
+                flag = _as_bool(node.get(key))
+                if flag is not None:
+                    signed_today = flag
+        raw_day = ""
+        for key in ("signDate", "date", "day", "signDay"):
+            if node.get(key):
+                raw_day = str(node.get(key)).replace("/", "-")[:10]
+                break
+        point = None
+        for key in ("point", "points", "signPoint", "signPoints", "rewardPoints"):
+            if node.get(key) not in (None, ""):
+                point = node.get(key)
+                break
+        signed = None
+        for key in ("sign", "signed", "isSign", "signFlag"):
+            if key in node:
+                signed = _as_bool(node.get(key))
+                if signed is not None:
+                    break
+        if raw_day:
+            if raw_day.replace("-", "")[:8] == today_compact:
+                if signed is not None:
+                    signed_today = signed
+                elif point is not None:
+                    signed_today = True
+                if point is not None and signed is not False:
+                    last_point = point
+                    last_day = today
+            elif signed and point is not None and raw_day >= last_day:
+                last_day = raw_day
+                last_point = point
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                visit(value)
+
+    visit(data)
+    return signed_today, last_point
+
+
+def _stored_sign_state(cache: dict):
+    signed = cache.get("signedToday")
+    signed_date = str(cache.get("signedDate") or "")
+    if signed is True and signed_date != _today():
+        signed = False if signed_date else None
+    return cache.get("points"), cache.get("lastSignPoints"), signed
+
+
+def save_account_meta(account: str, **fields) -> None:
+    key = account_key(account)
+    path = _account_token_path(key) if key else ""
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not data.get("token"):
+            return
+        for name, value in fields.items():
+            if value is not None:
+                data[name] = value
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def account_snapshot(token: str, account: str, lattice=None, sign_body=None, already_signed: bool = False) -> dict:
+    """汇总积分余额、上次签到积分、今天是否已签。查不到的字段沿用这个账号自己的记录。"""
+    cache = load_token(account) or {}
+    stored_points, stored_last, stored_today = _stored_sign_state(cache)
+    if not isinstance(lattice, dict):
+        lattice = query_lattice(token, account) or {}
+    points = lattice.get("remaindPoints")
+    signed_today = None
+    last_point = None
+    calendar = h5_gateway_post(token, account, "mixc.app.memberSign.signDate", {"mallNo": DEVICE["mallNo"]})
+    if isinstance(calendar, dict) and calendar.get("code") in (0, "0", None):
+        signed_today, last_point = parse_sign_calendar(calendar.get("data"))
+    gained = _gain_from_sign(sign_body)
+    if already_signed or gained not in (None, ""):
+        signed_today = True
+    if gained not in (None, ""):
+        last_point = gained
+    if signed_today is None:
+        signed_today = stored_today
+    if last_point in (None, ""):
+        last_point = stored_last
+    if points in (None, ""):
+        points = stored_points
+    meta = {}
+    if points not in (None, ""):
+        meta["points"] = points
+    if last_point not in (None, ""):
+        meta["lastSignPoints"] = last_point
+    if signed_today is True:
+        meta["signedToday"] = True
+        meta["signedDate"] = _today()
+    elif signed_today is False:
+        meta["signedToday"] = False
+        meta["signedDate"] = ""
+    if meta:
+        save_account_meta(account, **meta)
+    return {
+        "points": points,
+        "lastSignPoints": last_point,
+        "signedToday": True if signed_today is True else False if signed_today is False else None,
+    }
+
+
 def op_sign(token: str, account: str):
     """操作二：积分签到 action=mixc.app.memberSign.sign
 
@@ -745,7 +920,17 @@ def op_sign(token: str, account: str):
     if code not in (0, "0", None):
         message = j.get("message") or j.get("msg") or "签到失败"
         print("\n  ❌ 签到失败：", message)
-        return {"ok": False, "message": str(message)}
+        after_data = query_lattice(token, account) or {}
+        already = _already_signed(str(message))
+        return {
+            "ok": False,
+            "already_signed": already,
+            "message": "今天已经签过到" if already else str(message),
+            "points": after_data.get("remaindPoints"),
+            "lattice": after_data,
+            "sign_body": j,
+            "gained": _gain_from_sign(j),
+        }
     print("\n  ✅ 签到接口返回 code =", code, " message =", j.get("message"))
 
     # 3) 签到后查询最新积分（展示用）
@@ -757,9 +942,13 @@ def op_sign(token: str, account: str):
         print("     剩余步数     remaindStep  =", after_data.get("remaindStep"))
     return {
         "ok": True,
+        "already_signed": False,
         "message": "签到成功",
         "points": after_data.get("remaindPoints"),
         "step": after_data.get("currentStep"),
+        "lattice": after_data,
+        "sign_body": j,
+        "gained": _gain_from_sign(j),
     }
 
 
@@ -886,6 +1075,122 @@ def _emit_result(payload: dict):
     print("MIXC_RESULT:" + json.dumps(payload, ensure_ascii=False), flush=True)
 
 
+def _emit_session(account: str, snap: dict, message: str = ""):
+    _emit_result({
+        "status": "logged_in",
+        "loggedIn": True,
+        "account": account,
+        "message": message,
+        "points": snap.get("points"),
+        "lastSignPoints": snap.get("lastSignPoints"),
+        "signedToday": snap.get("signedToday"),
+    })
+
+
+def _acquire_token(account: str, password: str, code: str):
+    """返回 (token, 提前结束时要发给页面的结果)。"""
+    cache = load_token(account)
+    token = ""
+    if cache:
+        print(f"检测到账号 {account} 的缓存 token（{cache.get('saved_at')}），尝试验证。")
+        state = token_status(cache["token"], account)
+        if state == "invalid":
+            print("token 已失效。")
+            clear_token(account)
+        else:
+            token = cache["token"]
+            print("token 有效，跳过登录。" if state == "ok" else "暂时无法验证 token，仍使用该账号的本地登录态。")
+    if token:
+        return token, None
+    if code:
+        token = app_sms_login(account, code)
+        if not token:
+            return "", {"status": "error", "account": account, "message": "验证码登录失败"}
+        save_token(account, token)
+        return token, None
+    if password:
+        detail = app_login_detail(account, password)
+        if detail.get("device_limited"):
+            return "", {
+                "status": "device_limited",
+                "account": account,
+                "message": detail.get("message") or "登录遇到设备限制，请改用手机验证码",
+            }
+        token = detail.get("token") or ""
+        if not token:
+            return "", {
+                "status": "error",
+                "account": account,
+                "message": detail.get("message") or "账号密码登录失败",
+            }
+        save_token(account, token)
+        return token, None
+    return "", {
+        "status": "logged_out",
+        "loggedIn": False,
+        "account": account,
+        "message": "没有可用的登录状态，请先登录",
+    }
+
+
+def cli_session(account: str):
+    """只确认登录态并刷新积分，不执行签到。"""
+    if not check_config():
+        _emit_result({"status": "error", "account": account, "message": "配置文件缺失或字段不完整"})
+        return
+    if not account:
+        _emit_result({"status": "logged_out", "loggedIn": False, "account": account, "message": "未填写账号"})
+        return
+    cache = load_token(account)
+    if not cache:
+        _emit_result({"status": "logged_out", "loggedIn": False, "account": account, "message": "未登录"})
+        return
+    probed = h5_gateway_post(cache["token"], account, "mixc.app.memberSign.latticeList", {"mallNo": DEVICE["mallNo"]})
+    if probed is None:
+        points, last_point, signed_today = _stored_sign_state(cache)
+        _emit_session(account, {
+            "points": points,
+            "lastSignPoints": last_point,
+            "signedToday": signed_today,
+        }, "暂时无法刷新积分，先显示上次记录")
+        return
+    if probed.get("code") not in (0, "0", None):
+        clear_token(account)
+        _emit_result({
+            "status": "logged_out",
+            "loggedIn": False,
+            "account": account,
+            "message": probed.get("message") or "登录已失效，请重新登录",
+        })
+        return
+    snap = account_snapshot(cache["token"], account, lattice=probed.get("data") or {})
+    _emit_session(account, snap)
+
+
+def cli_login(account: str, password: str, code: str):
+    """只登录并保存登录态，不签到。"""
+    if not check_config():
+        _emit_result({"status": "error", "account": account, "message": "配置文件缺失或字段不完整"})
+        return
+    if not account:
+        _emit_result({"status": "error", "account": account, "message": "未填写账号"})
+        return
+    token, early = _acquire_token(account, password, code)
+    if early and early.get("status") != "logged_out":
+        _emit_result(early)
+        return
+    if not token:
+        _emit_result(early or {"status": "logged_out", "loggedIn": False, "account": account, "message": "登录失败"})
+        return
+    snap = account_snapshot(token, account)
+    _emit_session(account, snap, "登录成功")
+
+
+def cli_logout(account: str):
+    clear_token(account)
+    _emit_result({"status": "logged_out", "loggedIn": False, "account": account, "message": "已退出登录"})
+
+
 def cli_sign(account: str, password: str, code: str):
     """非交互签到：有缓存 token 就跳过登录；否则按验证码或密码登录。"""
     if not check_config():
@@ -895,59 +1200,38 @@ def cli_sign(account: str, password: str, code: str):
         _emit_result({"status": "error", "account": account, "message": "未填写账号"})
         return
 
-    token = ""
-    cache = load_token(account)
-    if cache:
-        print(f"检测到账号 {account} 的缓存 token（{cache.get('saved_at')}），尝试验证。")
-        status = token_status(cache["token"], account)
-        if status == "invalid":
-            print("token 已失效。")
-            clear_token(account)
-        else:
-            token = cache["token"]
-            print("token 有效，跳过登录。" if status == "ok" else "暂时无法验证 token，仍使用该账号的本地登录态。")
-
-    if not token and code:
-        token = app_sms_login(account, code)
-        if not token:
-            _emit_result({"status": "error", "account": account, "message": "验证码登录失败"})
-            return
-        save_token(account, token)
-    elif not token and password:
-        detail = app_login_detail(account, password)
-        if detail.get("device_limited"):
-            _emit_result({
-                "status": "device_limited",
-                "account": account,
-                "message": detail.get("message") or "登录遇到设备限制，请改用手机验证码",
-            })
-            return
-        token = detail.get("token") or ""
-        if not token:
-            _emit_result({
-                "status": "error",
-                "account": account,
-                "message": detail.get("message") or "账号密码登录失败",
-            })
-            return
-        save_token(account, token)
-    elif not token:
-        _emit_result({
-            "status": "error",
-            "account": account,
-            "message": "没有可用的登录状态，请填写密码或验证码",
-        })
+    token, early = _acquire_token(account, password, code)
+    if early:
+        _emit_result(early)
         return
 
     signed = op_sign(token, account) or {"ok": False, "message": "签到没有返回结果"}
-    if not signed.get("ok"):
-        _emit_result({"status": "error", "account": account, "message": signed.get("message") or "签到失败"})
+    snap = account_snapshot(
+        token,
+        account,
+        lattice=signed.get("lattice"),
+        sign_body=signed.get("sign_body"),
+        already_signed=bool(signed.get("already_signed")),
+    )
+    if not signed.get("ok") and not signed.get("already_signed"):
+        _emit_result({
+            "status": "error",
+            "loggedIn": True,
+            "account": account,
+            "message": signed.get("message") or "签到失败",
+            "points": snap.get("points"),
+            "lastSignPoints": snap.get("lastSignPoints"),
+            "signedToday": snap.get("signedToday"),
+        })
         return
     _emit_result({
         "status": "success",
+        "loggedIn": True,
         "account": account,
         "message": signed.get("message") or "签到成功",
-        "points": signed.get("points"),
+        "points": snap.get("points"),
+        "lastSignPoints": snap.get("lastSignPoints"),
+        "signedToday": snap.get("signedToday"),
         "step": signed.get("step"),
     })
 
@@ -964,6 +1248,8 @@ def cli_main():
         return
     action = str(data.get("action") or "").strip()
     account = str(data.get("account") or "").strip()
+    password = str(data.get("password") or "")
+    code = str(data.get("code") or "").strip()
     if action == "send-code":
         if not check_config():
             _emit_result({"status": "error", "account": account, "message": "配置文件缺失或字段不完整"})
@@ -978,8 +1264,17 @@ def cli_main():
             "message": "验证码已发送" if ok else "验证码发送失败",
         })
         return
+    if action == "session":
+        cli_session(account)
+        return
+    if action == "login":
+        cli_login(account, password, code)
+        return
+    if action == "logout":
+        cli_logout(account)
+        return
     if action == "sign":
-        cli_sign(account, str(data.get("password") or ""), str(data.get("code") or "").strip())
+        cli_sign(account, password, code)
         return
     _emit_result({"status": "error", "account": account, "message": f"未知操作: {action}"})
 
