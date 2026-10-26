@@ -222,6 +222,11 @@ def deduplicate_and_sort_by_field(arr, field="A", keep_last=True, reverse=False)
 
 
 _TITLE_BRACKET_RE = re.compile(r'[【】\[\]（）()]')
+# 项目名：【总后台】这类标题，且后面紧跟「1、」或到正文结尾。
+# 条目内部偶尔出现的【】不会被当成新项目。
+_PROJECT_HEADER_RE = re.compile(r'(?:^|\s)(【[^】\n]+】)(?=\s*(?:\d+、|$))')
+# 条目边界只认「空白 + 数字 + 、」。条目里的空格、英文、数字都不算新条目。
+_ITEM_MARK_RE = re.compile(r'(?:^|\s)(\d+)、')
 
 
 def strip_title_parens(title):
@@ -367,32 +372,105 @@ def format_data_and_copy(data, remove_duplicate=True):
     return formatted_text
 
 
+def _clean_item(text):
+    """把不间断空格、全角空格折成普通空格，并收掉条目里多余空白。"""
+    text = str(text).replace('\u00a0', ' ').replace('\u3000', ' ')
+    return " ".join(text.split())
+
+
+def _strip_field_label(text):
+    """只去掉字段名，例如「今日工作总结：」。正文里的冒号保留。"""
+    text = str(text or "").strip()
+    for sep in ("：", ":"):
+        idx = text.find(sep)
+        if idx == -1:
+            continue
+        label = text[:idx].strip()
+        if label and "【" not in label and len(label) <= 20:
+            return text[idx + len(sep):].strip()
+    return text
+
+
+def _split_numbered_items(body):
+    """按连续编号（1、2、3…）切条目。编号中断后再出现「1、」视为新的一组。"""
+    body = str(body or "")
+    marks = []
+    for match in _ITEM_MARK_RE.finditer(body):
+        marks.append((int(match.group(1)), match.start(1), match.end()))
+
+    chain = []
+    expected = 1
+    for num, num_start, mark_end in marks:
+        if num == expected:
+            chain.append((num_start, mark_end))
+            expected += 1
+        elif num == 1 and chain:
+            chain.append((num_start, mark_end))
+            expected = 2
+
+    if not chain:
+        if "\n" in body:
+            return [_clean_item(line) for line in body.splitlines() if line.strip()]
+        cleaned = _clean_item(body)
+        return [cleaned] if cleaned else []
+
+    items = []
+    for index, (_num_start, mark_end) in enumerate(chain):
+        end = chain[index + 1][0] if index + 1 < len(chain) else len(body)
+        cleaned = _clean_item(body[mark_end:end])
+        if cleaned:
+            items.append(cleaned)
+    return items
+
+
+def parse_report_sections(raw):
+    """把一条日报正文拆成 [(项目名, [条目, ...]), ...]。
+
+    企微列表接口把原文压成一行：换行变成空格，项目之间多半是两个空格。
+    条目本身常带空格（英文、数字、接口名），不能再按空格切开。
+    """
+    body = _strip_field_label(raw)
+    if not body:
+        return []
+
+    headers = list(_PROJECT_HEADER_RE.finditer(body))
+    if not headers:
+        pre_match = _ITEM_MARK_RE.search(body)
+        title = _clean_item(body[:pre_match.start()]) if pre_match else ""
+        items = _split_numbered_items(body)
+        if not items:
+            return []
+        return [(title or "其他", items)]
+
+    sections = []
+    for index, header in enumerate(headers):
+        title = _clean_item(header.group(1))
+        start = header.end()
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(body)
+        items = _split_numbered_items(body[start:end])
+        if title and items:
+            sections.append((title, items))
+    return sections
+
+
 def mergeData(data):
     global _business_result
     _push_log("正在合并整理数据...")
-    info = []
-    nameList = []
-    for item in data:
-        obj = item.get('showinfo', {}).get('wordings')
-        arr = obj[0].split('：')[1].split('  ')
-        for item in arr:
-            aaa = item.split(' ')
-            if len(aaa) <= 0:
-                continue
-            name = ''
-            for index, item2 in enumerate(aaa):
-                if item2 == '':
-                    continue
-                if index == 0:
-                    name = item2
-                    if item2 not in nameList:
-                        nameList.append(item2)
-                        info.append({'title': item2, 'list': []})
-                else:
-                    for item4 in info:
-                        if item4['title'] == name:
-                            item4['list'].append(item2)
+    buckets = {}
+    order = []
+    for record in data:
+        wordings = (record.get('showinfo') or {}).get('wordings') or []
+        if not wordings or not wordings[0]:
+            continue
+        for title, pieces in parse_report_sections(wordings[0]):
+            if title not in buckets:
+                buckets[title] = []
+                order.append(title)
+            buckets[title].extend(pieces)
 
+    total = sum(len(buckets[title]) for title in order)
+    _push_log(f"按条目编号整理完成，共 {len(order)} 个项目、{total} 条")
+    info = [{'title': title, 'list': buckets[title]} for title in order]
     _business_result = format_data_and_copy(info)
 
 
